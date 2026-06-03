@@ -62,7 +62,7 @@ def vcr_config():
 
 @pytest.fixture(
     scope="function",
-    params=[(True, "span_only")],
+    params=[(True, "span_only"), (False, "True")],
     name="content_mode",
 )
 def fixture_content_mode(request):
