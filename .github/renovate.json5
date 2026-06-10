@@ -27,6 +27,17 @@
   ],
   "packageRules": [
     {
+      // Keep lock file maintenance PRs pre-commit clean by regenerating
+      // uv.lock with the same index URL as the uv-lock pre-commit hook.
+      "matchManagers": ["uv"],
+      "matchUpdateTypes": ["lockFileMaintenance"],
+      "postUpgradeTasks": {
+        "commands": ["uv lock --index-url https://pypi.org/simple/"],
+        "fileFilters": ["uv.lock"],
+        "executionMode": "update"
+      }
+    },
+    {
       "groupName": "all patch versions",
       "matchUpdateTypes": ["patch"],
       "schedule": ["before 8am every weekday"]
