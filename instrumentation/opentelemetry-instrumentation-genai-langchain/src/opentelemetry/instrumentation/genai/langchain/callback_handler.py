@@ -193,6 +193,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         metadata: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
+
         if "invocation_params" in kwargs:
             params = (
                 kwargs["invocation_params"].get("params")
@@ -206,6 +207,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         for model_tag in (
             "model_name",  # ChatOpenAI / ChatAnthropic
             "model_id",  # ChatBedrock
+
             "model",  # ChatGoogleGenerativeAI / ChatVertexAI / ChatGroq / ChatMistralAI / ChatCohere / ChatOllama / ChatDeepSeek / ChatXAI
         ):
             if (model := (params or {}).get(model_tag)) is not None:
@@ -235,9 +237,10 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             top_p = params.get("top_p")
             frequency_penalty = params.get("frequency_penalty")
             presence_penalty = params.get("presence_penalty")
-            stop_sequences = params.get("stop")
+            stop_sequences = params.get("stop") or params.get("stop_sequences")
             seed = params.get("seed")
             temperature = params.get("temperature")
+
             # ``max_completion_tokens`` is OpenAI-specific; fall back to the
             # generic ``max_tokens`` used by Anthropic, Mistral, Cohere, etc.
             max_tokens = params.get("max_completion_tokens") or params.get(

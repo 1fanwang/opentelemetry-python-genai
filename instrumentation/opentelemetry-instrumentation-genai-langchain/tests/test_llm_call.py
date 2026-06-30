@@ -214,6 +214,26 @@ def test_us_amazon_nova_lite_v1_0_bedrock_llm_call(
     assert_bedrock_completion_attributes(spans[0], result)
 
 
+@pytest.mark.vcr()
+def test_chat_anthropic_claude_sonnet_llm_call(
+    span_exporter, start_instrumentation, chat_anthropic_claude_sonnet
+):
+    messages = [
+        SystemMessage(content="You are a helpful assistant!"),
+        HumanMessage(content="What is the capital of France?"),
+    ]
+
+    result = chat_anthropic_claude_sonnet.invoke(messages)
+
+    assert result.content.find("The capital of France is Paris") != -1
+
+    # verify spans
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.attributes.get("gen_ai.request.model") == "claude-sonnet-4-5"
+
+
 # span_exporter, start_instrumentation, gemini are coming from fixtures defined in conftest.py
 def test_gemini(span_exporter, start_instrumentation, gemini, vcr):
     messages = [
