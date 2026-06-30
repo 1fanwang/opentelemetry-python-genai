@@ -231,7 +231,10 @@ def test_chat_anthropic_claude_sonnet_llm_call(
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
     span = spans[0]
-    assert span.attributes.get(gen_ai_attributes.GEN_AI_REQUEST_MODEL) == "claude-sonnet-4-5"
+    assert (
+        span.attributes.get(gen_ai_attributes.GEN_AI_REQUEST_MODEL)
+        == "claude-sonnet-4-5"
+    )
 
 
 # span_exporter, start_instrumentation, gemini are coming from fixtures defined in conftest.py
