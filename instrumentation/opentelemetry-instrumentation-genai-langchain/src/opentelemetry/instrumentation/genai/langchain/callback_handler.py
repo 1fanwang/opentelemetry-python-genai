@@ -194,6 +194,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
 
+
         if "invocation_params" in kwargs:
             params = (
                 kwargs["invocation_params"].get("params")
@@ -237,7 +238,11 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             top_p = params.get("top_p")
             frequency_penalty = params.get("frequency_penalty")
             presence_penalty = params.get("presence_penalty")
-            stop_sequences = params.get("stop") if params.get("stop") is not None else params.get("stop_sequences")
+            stop_sequences = (
+                params.get("stop")
+                if params.get("stop") is not None
+                else params.get("stop_sequences")
+            )
             seed = params.get("seed")
             temperature = params.get("temperature")
             max_tokens = (
