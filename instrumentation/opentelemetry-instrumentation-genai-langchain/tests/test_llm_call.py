@@ -237,6 +237,40 @@ def test_chat_anthropic_claude_sonnet_llm_call(
     )
 
 
+@pytest.mark.vcr()
+def test_chat_anthropic_claude_sonnet_tool_call(
+    span_exporter, start_instrumentation, chat_anthropic_claude_sonnet
+):
+    from langchain_core.tools import tool
+
+    @tool
+    def get_current_weather(location: str) -> str:
+        """Get the current weather in a given location."""
+        return f"The weather in {location} is sunny."
+
+    llm_with_tools = chat_anthropic_claude_sonnet.bind_tools(
+        [get_current_weather]
+    )
+
+    messages = [
+        HumanMessage(content="What's the weather in Seattle?"),
+    ]
+
+    llm_with_tools.invoke(messages)
+
+    # verify spans
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert (
+        span.attributes.get(gen_ai_attributes.GEN_AI_REQUEST_MODEL)
+        == "claude-sonnet-4-5"
+    )
+    assert span.attributes.get(
+        gen_ai_attributes.GEN_AI_RESPONSE_FINISH_REASONS
+    ) == ("tool_calls",)
+
+
 # span_exporter, start_instrumentation, gemini are coming from fixtures defined in conftest.py
 def test_gemini(span_exporter, start_instrumentation, gemini, vcr):
     messages = [
