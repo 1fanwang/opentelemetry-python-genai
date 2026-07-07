@@ -268,7 +268,7 @@ def test_chat_anthropic_claude_sonnet_tool_call(
     )
     assert span.attributes.get(
         gen_ai_attributes.GEN_AI_RESPONSE_FINISH_REASONS
-    ) == ("tool_calls",)
+    ) == ("tool_use",)
 
 
 # span_exporter, start_instrumentation, gemini are coming from fixtures defined in conftest.py

@@ -333,7 +333,9 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                         and chat_generation.message.response_metadata
                     ):
                         finish_reason = (
-                            chat_generation.message.response_metadata.get("stopReason")
+                            chat_generation.message.response_metadata.get(
+                                "stopReason"
+                            )
                             or chat_generation.message.response_metadata.get(
                                 "stop_reason", "unknown"
                             )
