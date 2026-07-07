@@ -242,7 +242,6 @@ def test_chat_anthropic_claude_sonnet_llm_call(
 def test_chat_anthropic_claude_sonnet_tool_call(
     span_exporter, start_instrumentation, chat_anthropic_claude_sonnet
 ):
-
     @tool
     def get_current_weather(location: str) -> str:
         """Get the current weather in a given location."""
