@@ -193,8 +193,6 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         metadata: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
-
-
         if "invocation_params" in kwargs:
             params = (
                 kwargs["invocation_params"].get("params")
@@ -208,7 +206,6 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         for model_tag in (
             "model_name",  # ChatOpenAI / ChatAnthropic
             "model_id",  # ChatBedrock
-
             "model",  # ChatGoogleGenerativeAI / ChatVertexAI / ChatGroq / ChatMistralAI / ChatCohere / ChatOllama / ChatDeepSeek / ChatXAI
         ):
             if (model := (params or {}).get(model_tag)) is not None:
