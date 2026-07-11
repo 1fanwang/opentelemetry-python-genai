@@ -1,1 +1,2 @@
-Add ChatAnthropic support to LangChain instrumentation callback handler.
+Add ChatAnthropic tool-calling test coverage and fix finish_reason extraction for 
+Anthropic responses in LangChain instrumentation.
