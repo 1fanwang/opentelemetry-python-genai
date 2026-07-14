@@ -761,3 +761,21 @@ def assert_log_parent(log_record, span):
         assert log_record.trace_id == span.get_span_context().trace_id
         assert log_record.span_id == span.get_span_context().span_id
         assert log_record.trace_flags == span.get_span_context().trace_flags
+
+
+@pytest.mark.vcr()
+def test_chat_anthropic_claude_sonnet_stop_sequences_fallback(
+    span_exporter, start_instrumentation, chat_anthropic_claude_sonnet
+):
+    from langchain_core.messages import HumanMessage
+
+    llm = chat_anthropic_claude_sonnet.bind(stop_sequences=["STOP"])
+    llm.invoke([HumanMessage(content="Say hi")])
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    stop_sequences = span.attributes.get(
+        gen_ai_attributes.GEN_AI_REQUEST_STOP_SEQUENCES
+    )
+    assert stop_sequences == ("STOP",)
