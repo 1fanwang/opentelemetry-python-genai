@@ -5,6 +5,7 @@ from importlib.metadata import version as _pkg_version
 from typing import Optional
 
 import pytest
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import (
     FunctionMessage,
     HumanMessage,
@@ -769,6 +770,26 @@ def test_chat_anthropic_claude_sonnet_stop_sequences_fallback(
 ):
     llm = chat_anthropic_claude_sonnet.bind(stop_sequences=["STOP"])
     llm.invoke([HumanMessage(content="Say hi")])
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    stop_sequences = span.attributes.get(
+        gen_ai_attributes.GEN_AI_REQUEST_STOP_SEQUENCES
+    )
+    assert stop_sequences == ("STOP",)
+
+
+@pytest.mark.vcr()
+def test_chat_anthropic_claude_sonnet_stop_sequences_constructor_fallback(
+    span_exporter, start_instrumentation
+):
+    model = ChatAnthropic(
+        model="claude-sonnet-4-5",
+        api_key="test_key",
+        stop_sequences=["STOP"],
+    )
+    model.invoke([HumanMessage(content="Say hi")])
 
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
