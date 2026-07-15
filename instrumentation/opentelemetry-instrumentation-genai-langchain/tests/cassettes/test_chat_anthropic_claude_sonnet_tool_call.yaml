@@ -2,33 +2,7 @@
 interactions:
 - request:
     body: |-
-      {
-        "model": "claude-sonnet-4-5",
-        "max_tokens": 1024,
-        "temperature": 0.1,
-        "tools": [
-          {
-            "name": "get_current_weather",
-            "description": "Get the current weather in a given location",
-            "input_schema": {
-              "type": "object",
-              "properties": {
-                "location": {
-                  "type": "string",
-                  "description": "The city and state, e.g. Boston, MA"
-                }
-              },
-              "required": ["location"]
-            }
-          }
-        ],
-        "messages": [
-          {
-            "role": "user",
-            "content": "What's the weather in Seattle?"
-          }
-        ]
-      }
+      {"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"What's the weather in Seattle?"}],"temperature":0.1,"tools":[{"name":"get_current_weather","input_schema":{"properties":{"location":{"type":"string"}},"required":["location"],"type":"object"},"description":"Get the current weather in a given location."}]}
     headers:
       Content-Type:
       - application/json

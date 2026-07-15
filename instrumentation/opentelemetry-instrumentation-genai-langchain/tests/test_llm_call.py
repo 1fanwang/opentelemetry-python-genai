@@ -767,8 +767,6 @@ def assert_log_parent(log_record, span):
 def test_chat_anthropic_claude_sonnet_stop_sequences_fallback(
     span_exporter, start_instrumentation, chat_anthropic_claude_sonnet
 ):
-    from langchain_core.messages import HumanMessage
-
     llm = chat_anthropic_claude_sonnet.bind(stop_sequences=["STOP"])
     llm.invoke([HumanMessage(content="Say hi")])
 
