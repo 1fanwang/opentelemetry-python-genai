@@ -787,6 +787,7 @@ def test_chat_anthropic_claude_sonnet_stop_sequences_constructor_fallback(
     model = ChatAnthropic(
         model="claude-sonnet-4-5",
         api_key="test_key",
+        max_tokens=1024,
         stop_sequences=["STOP"],
     )
     model.invoke([HumanMessage(content="Say hi")])

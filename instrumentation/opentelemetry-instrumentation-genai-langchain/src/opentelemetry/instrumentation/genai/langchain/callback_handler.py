@@ -239,9 +239,10 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             if stop_sequences is None:
                 stop_sequences = params.get("stop_sequences")
             if stop_sequences is None:
-                stop_sequences = (serialized.get("kwargs") or {}).get(
-                    "stop_sequences"
+                serialized_kwargs: dict[str, Any] = (
+                    serialized.get("kwargs") or {}
                 )
+                stop_sequences = serialized_kwargs.get("stop_sequences")
             seed = params.get("seed")
             temperature = params.get("temperature")
             max_tokens = (

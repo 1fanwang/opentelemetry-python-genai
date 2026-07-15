@@ -2,7 +2,7 @@
 interactions:
 - request:
     body: |-
-      {"max_tokens":64000,"messages":[{"role":"user","content":"Say hi"}],"model":"claude-sonnet-4-5","stop_sequences":["STOP"]}
+      {"max_tokens":1024,"messages":[{"role":"user","content":"Say hi"}],"model":"claude-sonnet-4-5","stop_sequences":["STOP"]}
     headers:
       Content-Type:
       - application/json
