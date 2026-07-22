@@ -238,6 +238,11 @@ def test_chat_anthropic_claude_sonnet_llm_call(
         == "claude-sonnet-4-5"
     )
 
+    assert (
+        span.attributes.get(gen_ai_attributes.GEN_AI_REQUEST_MAX_TOKENS)
+        == 1024
+    )  
+
 
 @pytest.mark.vcr()
 def test_chat_anthropic_claude_sonnet_tool_call(
