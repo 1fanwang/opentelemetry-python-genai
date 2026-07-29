@@ -366,7 +366,10 @@ def test_responses_create_connection_error(
     )
     assert span.attributes[ServerAttributes.SERVER_ADDRESS] == "localhost"
     assert span.attributes[ServerAttributes.SERVER_PORT] == 4242
-    assert span.attributes[ErrorAttributes.ERROR_TYPE] == "APIConnectionError"
+    assert (
+        span.attributes[ErrorAttributes.ERROR_TYPE]
+        == "openai.APIConnectionError"
+    )
 
 
 @pytest.mark.vcr()
@@ -387,7 +390,7 @@ def test_responses_create_api_error(
     )
     assert (
         span.attributes[ErrorAttributes.ERROR_TYPE]
-        == type(exc_info.value).__name__
+        == f"openai.{type(exc_info.value).__name__}"
     )
 
 
@@ -522,7 +525,10 @@ def test_responses_stream_connection_error(
     assert (
         span.attributes[GenAIAttributes.GEN_AI_REQUEST_MODEL] == DEFAULT_MODEL
     )
-    assert span.attributes[ErrorAttributes.ERROR_TYPE] == "APIConnectionError"
+    assert (
+        span.attributes[ErrorAttributes.ERROR_TYPE]
+        == "openai.APIConnectionError"
+    )
 
 
 @pytest.mark.vcr()
@@ -722,7 +728,10 @@ def test_responses_create_streaming_connection_error(
     assert (
         span.attributes[GenAIAttributes.GEN_AI_REQUEST_MODEL] == DEFAULT_MODEL
     )
-    assert span.attributes[ErrorAttributes.ERROR_TYPE] == "APIConnectionError"
+    assert (
+        span.attributes[ErrorAttributes.ERROR_TYPE]
+        == "openai.APIConnectionError"
+    )
 
 
 @pytest.mark.vcr()
