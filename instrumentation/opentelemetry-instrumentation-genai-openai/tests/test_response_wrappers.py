@@ -73,10 +73,15 @@ def _noop_fail(error):
     del error
 
 
+def _noop_on_stream_chunk(chunk_at):
+    del chunk_at
+
+
 def _make_wrapper(manager):
     invocation = SimpleNamespace(
         request_model=None,
         stop=_noop_stop,
+        _on_stream_chunk=_noop_on_stream_chunk,
         fail=_noop_fail,
     )
     return ResponseStreamManagerWrapper(
@@ -92,6 +97,7 @@ def _make_stream_wrapper(stream, invocation=None):
             request_model=None,
             stop=_noop_stop,
             fail=_noop_fail,
+            _on_stream_chunk=_noop_on_stream_chunk,
         )
     return ResponseStreamWrapper(
         stream=stream,
@@ -104,6 +110,7 @@ def _make_async_manager_wrapper(manager):
     invocation = SimpleNamespace(
         request_model=None,
         stop=_noop_stop,
+        _on_stream_chunk=_noop_on_stream_chunk,
         fail=_noop_fail,
     )
     return AsyncResponseStreamManagerWrapper(
@@ -119,6 +126,7 @@ def _make_async_stream_wrapper(stream, invocation=None):
             request_model=None,
             stop=_noop_stop,
             fail=_noop_fail,
+            _on_stream_chunk=_noop_on_stream_chunk,
         )
     return AsyncResponseStreamWrapper(
         stream=stream,
@@ -231,6 +239,7 @@ def test_manager_enter_failure_fails_invocation_and_reraises():
     invocation = SimpleNamespace(
         request_model=None,
         stop=_noop_stop,
+        _on_stream_chunk=_noop_on_stream_chunk,
         fail=failures.append,
     )
     wrapper = ResponseStreamManagerWrapper(
@@ -329,6 +338,7 @@ async def test_async_manager_enter_failure_fails_invocation_and_reraises():
     invocation = SimpleNamespace(
         request_model=None,
         stop=_noop_stop,
+        _on_stream_chunk=_noop_on_stream_chunk,
         fail=failures.append,
     )
     wrapper = AsyncResponseStreamManagerWrapper(
