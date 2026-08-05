@@ -31,10 +31,10 @@ from opentelemetry.util.genai._workflow_invocation import WorkflowInvocation
 __all__ = [
     "AgentInvocation",
     "ContextToken",
+    "EmbeddingInvocation",
     "Error",
     "GenAIInvocation",
     "InferenceInvocation",
-    "EmbeddingInvocation",
     "RetrievalInvocation",
     "ToolInvocation",
     "WorkflowInvocation",

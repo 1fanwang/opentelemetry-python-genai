@@ -173,7 +173,7 @@ def extract_params(
     )
 
 
-def get_system_instruction(instructions: str | None) -> list["Text"]:
+def get_system_instruction(instructions: str | None) -> list[Text]:
     if Text is None or instructions is None:
         return []
     return [Text(content=instructions)]
@@ -181,7 +181,7 @@ def get_system_instruction(instructions: str | None) -> list["Text"]:
 
 def get_input_messages(
     input_value: str | Sequence[object] | None,
-) -> list["InputMessage"]:
+) -> list[InputMessage]:
     if InputMessage is None or Text is None:
         return []
 
@@ -212,7 +212,7 @@ def get_input_messages(
     return messages
 
 
-def _extract_output_parts(content_blocks: Sequence[object]) -> list["Text"]:
+def _extract_output_parts(content_blocks: Sequence[object]) -> list[Text]:
     if (
         Text is None
         or ResponseOutputText is None
@@ -240,8 +240,8 @@ def _parse_tool_call_arguments(arguments: str | None) -> object:
 
 
 def _extract_reasoning_parts(
-    item: "ResponseReasoningItem",
-) -> list["Reasoning"]:
+    item: ResponseReasoningItem,
+) -> list[Reasoning]:
     if Reasoning is None:
         return []
 
@@ -275,8 +275,8 @@ def _response_types_available() -> bool:
 
 
 def get_output_messages_from_response(
-    response: "Response | None",
-) -> list["OutputMessage"]:
+    response: Response | None,
+) -> list[OutputMessage]:
     if (
         not _response_types_available()
         or not isinstance(response, Response)
@@ -343,7 +343,7 @@ def get_output_messages_from_response(
     return messages
 
 
-def extract_finish_reasons(response: "Response | None") -> list[str]:
+def extract_finish_reasons(response: Response | None) -> list[str]:
     if (
         Response is None
         or ResponseOutputMessage is None
@@ -369,7 +369,7 @@ def extract_finish_reasons(response: "Response | None") -> list[str]:
     return list(dict.fromkeys(finish_reasons))
 
 
-def get_response_error(response: "Response | None") -> "Error | None":
+def get_response_error(response: Response | None) -> Error | None:
     """Return an ``Error`` when the response failed, else ``None``.
 
     A failed response carries a ``ResponseError`` (``code`` + ``message``).
@@ -428,7 +428,7 @@ def apply_request_attributes(
         invocation.input_messages = get_input_messages(params.input)
 
 
-def extract_usage_tokens(usage: "ResponseUsage | None") -> UsageTokens:
+def extract_usage_tokens(usage: ResponseUsage | None) -> UsageTokens:
     if (
         ResponseUsage is None
         or usage is None

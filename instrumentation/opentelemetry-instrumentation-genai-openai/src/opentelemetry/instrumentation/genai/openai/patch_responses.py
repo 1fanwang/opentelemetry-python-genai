@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Union, cast
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Union, cast
 
 from opentelemetry.util.genai.handler import TelemetryHandler
 
@@ -50,11 +51,7 @@ def responses_create(
     handler: TelemetryHandler,
 ) -> Callable[
     ...,
-    Union[
-        ResponseResult,
-        ResponseStreamResult,
-        ResponseStreamWrapper[Any],
-    ],
+    ResponseResult | ResponseStreamResult | ResponseStreamWrapper[Any],
 ]:
     """Wrap ``Responses.create`` to trace Responses API calls.
 
@@ -66,15 +63,11 @@ def responses_create(
     capture_content = handler.should_capture_content()
 
     def traced_method(
-        wrapped: Callable[..., Union[ResponseResult, ResponseStreamResult]],
-        instance: "Responses",
+        wrapped: Callable[..., ResponseResult | ResponseStreamResult],
+        instance: Responses,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-    ) -> Union[
-        ResponseResult,
-        ResponseStreamResult,
-        ResponseStreamWrapper[Any],
-    ]:
+    ) -> ResponseResult | ResponseStreamResult | ResponseStreamWrapper[Any]:
         stream_context = responses_stream_context.get()
         if stream_context is not None:
             # Called by the Responses.stream() manager: it owns telemetry, so
@@ -111,7 +104,7 @@ def responses_create(
             raise
 
     return cast(
-        'Callable[..., Union["ResponseResult", "ResponseStreamResult", ResponseStreamWrapper[Any]]]',
+        'Callable[..., "ResponseResult" | "ResponseStreamResult" | ResponseStreamWrapper[Any]]',
         traced_method,
     )
 
@@ -121,11 +114,9 @@ def async_responses_create(
 ) -> Callable[
     ...,
     Awaitable[
-        Union[
-            ResponseResult,
-            AsyncResponseStreamResult,
-            AsyncResponseStreamWrapper[Any],
-        ]
+        ResponseResult
+        | AsyncResponseStreamResult
+        | AsyncResponseStreamWrapper[Any]
     ],
 ]:
     """Wrap ``AsyncResponses.create`` to trace async Responses API calls.
@@ -140,16 +131,16 @@ def async_responses_create(
     async def traced_method(
         wrapped: Callable[
             ...,
-            Awaitable[Union[ResponseResult, AsyncResponseStreamResult]],
+            Awaitable[ResponseResult | AsyncResponseStreamResult],
         ],
-        instance: "AsyncResponses",
+        instance: AsyncResponses,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-    ) -> Union[
-        ResponseResult,
-        AsyncResponseStreamResult,
-        AsyncResponseStreamWrapper[Any],
-    ]:
+    ) -> (
+        ResponseResult
+        | AsyncResponseStreamResult
+        | AsyncResponseStreamWrapper[Any]
+    ):
         stream_context = responses_stream_context.get()
         if stream_context is not None:
             # Called by the Responses.stream() manager: it owns telemetry, so
@@ -186,7 +177,7 @@ def async_responses_create(
             raise
 
     return cast(
-        'Callable[..., Awaitable[Union["ResponseResult", "AsyncResponseStreamResult", AsyncResponseStreamWrapper[Any]]]]',
+        'Callable[..., Awaitable["ResponseResult" | "AsyncResponseStreamResult" | AsyncResponseStreamWrapper[Any]]]',
         traced_method,
     )
 
@@ -204,8 +195,8 @@ def responses_stream(
     capture_content = handler.should_capture_content()
 
     def traced_method(
-        wrapped: Callable[..., "ResponseStreamManager[Any]"],
-        instance: "Responses",
+        wrapped: Callable[..., ResponseStreamManager[Any]],
+        instance: Responses,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> ResponseStreamManagerWrapper[Any]:
@@ -241,8 +232,8 @@ def async_responses_stream(
     capture_content = handler.should_capture_content()
 
     def traced_method(
-        wrapped: Callable[..., "AsyncResponseStreamManager[Any]"],
-        instance: "AsyncResponses",
+        wrapped: Callable[..., AsyncResponseStreamManager[Any]],
+        instance: AsyncResponses,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> AsyncResponseStreamManagerWrapper[Any]:
