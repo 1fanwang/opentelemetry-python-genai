@@ -18,6 +18,7 @@ from opentelemetry.semconv._incubating.attributes import (
 from ._raw_response import ParsableResponse
 from .utils import (
     _openai_response_format_to_output_type,
+    get_served_model,
     get_server_address_and_port,
 )
 
@@ -460,6 +461,7 @@ def set_invocation_response_attributes(
     response: object,
     capture_content: bool,
 ) -> None:
+    served_model = get_served_model(getattr(response, "headers", None))
     if isinstance(response, ParsableResponse):
         # with_raw_response: safe to parse() here since this is the
         # non-streaming path, so it has no side effects on the caller's stream.
@@ -467,8 +469,10 @@ def set_invocation_response_attributes(
 
     if Response is None or not isinstance(response, Response):
         return
-
-    invocation.response_model_name = response.model
+    if served_model:
+        invocation.response_model_name = served_model
+    else:
+        invocation.response_model_name = response.model
     invocation.response_id = response.id
 
     if response.service_tier is not None:
