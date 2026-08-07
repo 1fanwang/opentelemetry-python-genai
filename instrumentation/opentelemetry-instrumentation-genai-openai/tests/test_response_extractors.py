@@ -11,7 +11,11 @@ from opentelemetry.instrumentation.genai.openai.utils import get_served_model
 from opentelemetry.semconv._incubating.attributes import (
     openai_attributes as OpenAIAttributes,
 )
-from opentelemetry.util.genai.types import LLMInvocation
+from opentelemetry.util.genai.types import (
+    FunctionToolDefinition,
+    GenericToolDefinition,
+    LLMInvocation,
+)
 
 try:
     # Responses types are not available in the oldest supported OpenAI SDK.
@@ -241,6 +245,36 @@ def test_get_response_error_returns_error_for_failed_response(loaded_module):
     assert error.message == "boom"
 
 
+def test_get_response_error_parses_raw_response(loaded_module):
+    response = _make_response(
+        status="failed",
+        error={"code": "server_error", "message": "boom"},
+    )
+    raw_response = SimpleNamespace(parse=mock.Mock(return_value=response))
+
+    error = loaded_module.get_response_error(raw_response)
+
+    assert error is not None
+    assert error.type == "server_error"
+    raw_response.parse.assert_called_once_with()
+
+
+def test_get_response_error_keeps_streaming_raw_response_lazy(loaded_module):
+    raw_response = SimpleNamespace(parse=mock.Mock())
+
+    error = loaded_module.get_response_error(
+        raw_response,
+        {
+            "extra_headers": {
+                "X-Stainless-Raw-Response": "stream",
+            }
+        },
+    )
+
+    assert error is None
+    raw_response.parse.assert_not_called()
+
+
 def test_get_response_error_none_for_incomplete_response(loaded_module):
     # Incomplete is a finish reason, not an error.
     response = _make_response(
@@ -461,6 +495,198 @@ def test_response_extractors_ignore_invalid_shapes_without_validation(
     assert invocation.finish_reasons is None
     assert not invocation.output_messages
     assert not invocation.attributes
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"status": "completed"}, ["stop"]),
+        ({"status": "failed"}, ["error"]),
+        ({"status": "cancelled"}, ["error"]),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+            ["length"],
+        ),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+            },
+            ["content_filter"],
+        ),
+        ({"status": "incomplete"}, ["incomplete"]),
+        # Non-terminal and unknown statuses: generation is not known to have
+        # stopped, so there is no finish reason to report. gen_ai.response.status
+        # conveys the lifecycle state instead.
+        ({"status": "queued"}, []),
+        ({"status": "in_progress"}, []),
+        ({}, []),
+    ],
+)
+def test_extract_finish_reasons_maps_response_status(
+    loaded_module, overrides, expected
+):
+    response = _make_response(**overrides)
+
+    assert loaded_module.extract_finish_reasons(response) == expected
+
+
+def test_set_fetch_response_attributes_tolerates_missing_service_tier():
+    """`service_tier` is absent from the Response model on older SDKs.
+
+    Deleting the field from the instance makes attribute access raise
+    ``AttributeError``, exactly as it does on an SDK whose ``Response`` model
+    never declared it (for example openai 1.70).
+    """
+    response = _make_response(status="completed")
+    del response.__dict__["service_tier"]
+    with pytest.raises(AttributeError):
+        response.service_tier  # pylint: disable=pointless-statement
+
+    invocation = SimpleNamespace(
+        response_model_name=None,
+        response_status=None,
+        finish_reasons=None,
+        output_messages=[],
+        system_instruction=[],
+        attributes={},
+    )
+
+    response_extractors.set_fetch_response_attributes(
+        invocation, response, capture_content=False
+    )
+
+    assert invocation.response_status == "completed"
+    assert invocation.finish_reasons == ["stop"]
+    assert (
+        OpenAIAttributes.OPENAI_RESPONSE_SERVICE_TIER
+        not in invocation.attributes
+    )
+
+
+def test_get_tool_definitions_from_response_maps_flat_responses_tools(
+    loaded_module,
+):
+    """Responses API tools are flat, unlike the nested Chat Completions shape."""
+    response = _make_response(
+        tools=[
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+                "strict": True,
+            }
+        ]
+    )
+
+    definitions = loaded_module.get_tool_definitions_from_response(response)
+
+    (definition,) = definitions
+    assert isinstance(definition, FunctionToolDefinition)
+    assert definition.type == "function"
+    assert definition.name == "get_weather"
+    assert definition.description == "Get the weather"
+    assert definition.parameters == {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+    }
+
+
+def test_get_tool_definitions_from_response_maps_builtin_tools_by_type(
+    loaded_module,
+):
+    """Built-in tools carry no name, so their type identifies them."""
+    response = _make_response(
+        tools=[{"type": "web_search_preview"}],
+    )
+
+    definitions = loaded_module.get_tool_definitions_from_response(response)
+
+    (definition,) = definitions
+    assert isinstance(definition, GenericToolDefinition)
+    assert definition.type == "web_search_preview"
+    assert definition.name == "web_search_preview"
+
+
+def test_get_tool_definitions_from_response_returns_none_without_tools(
+    loaded_module,
+):
+    assert loaded_module.get_tool_definitions_from_response(None) is None
+    assert (
+        loaded_module.get_tool_definitions_from_response(_make_response())
+        is None
+    )
+
+
+def test_set_fetch_response_attributes_captures_tool_definitions(
+    loaded_module,
+):
+    """Tool definitions are captured only when content capture is enabled."""
+    response = _make_response(
+        status="completed",
+        tools=[
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": None,
+                "parameters": {"type": "object"},
+                "strict": True,
+            }
+        ],
+    )
+
+    def _make_invocation():
+        return SimpleNamespace(
+            response_model_name=None,
+            response_status=None,
+            finish_reasons=None,
+            output_messages=[],
+            system_instruction=[],
+            tool_definitions=None,
+            attributes={},
+        )
+
+    captured = _make_invocation()
+    loaded_module.set_fetch_response_attributes(
+        captured, response, capture_content=True
+    )
+    (definition,) = captured.tool_definitions
+    assert isinstance(definition, FunctionToolDefinition)
+    assert definition.name == "get_weather"
+
+    not_captured = _make_invocation()
+    loaded_module.set_fetch_response_attributes(
+        not_captured, response, capture_content=False
+    )
+    assert not_captured.tool_definitions is None
+
+
+def test_set_fetch_response_attributes_prefers_raw_served_model_header(
+    loaded_module,
+):
+    invocation = SimpleNamespace(
+        response_model_name=None,
+        response_status=None,
+        finish_reasons=None,
+        output_messages=[],
+        system_instruction=[],
+        attributes={},
+    )
+    raw_response = _RawResponse(_make_response(model="body-gpt-4.1"))
+
+    loaded_module.set_fetch_response_attributes(
+        invocation, raw_response, capture_content=False
+    )
+
+    assert raw_response.parse_count == 1
+    assert invocation.response_model_name == "served-gpt-4.1"
 
 
 def test_get_served_model_returns_value_when_present():
