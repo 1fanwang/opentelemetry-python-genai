@@ -172,6 +172,49 @@ class TestClassifyChainRun:
         )
         assert result == OperationName.INVOKE_AGENT
 
+    def test_top_level_langchain_agent_is_agent(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={"lc_agent_name": "my_agent"},
+            kwargs={},
+            parent_run_id=None,
+        )
+        assert result == OperationName.INVOKE_AGENT
+
+    def test_internal_langgraph_node_is_not_agent(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={
+                "lc_agent_name": "my_agent",
+                "langgraph_node": "model",
+            },
+            kwargs={},
+            parent_run_id=uuid.uuid4(),
+        )
+        assert result is None
+
+    def test_nested_langchain_agent_is_agent(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={"lc_agent_name": "nested_agent"},
+            kwargs={},
+            parent_run_id=uuid.uuid4(),
+        )
+        assert result == OperationName.INVOKE_AGENT
+
+    def test_explicit_otel_agent_metadata_overrides_node_inference(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={
+                "agent_type": "react",
+                "lc_agent_name": "my_agent",
+                "langgraph_node": "model",
+            },
+            kwargs={},
+            parent_run_id=uuid.uuid4(),
+        )
+        assert result == OperationName.INVOKE_AGENT
+
     def test_langgraph_node_metadata_with_parent_is_suppressed(self):
         # langgraph_node alone is no longer an agent signal in _has_agent_signals;
         # it is only used by resolve_agent_name for name resolution.
@@ -241,6 +284,18 @@ class TestClassifyChainRun:
             metadata={"otel_agent_span": False},
             kwargs={},
             parent_run_id=uuid.uuid4(),
+        )
+        assert result is None
+
+    def test_otel_agent_span_false_suppresses_inferred_langchain_agent(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={
+                "otel_agent_span": False,
+                "lc_agent_name": "my_agent",
+            },
+            kwargs={},
+            parent_run_id=None,
         )
         assert result is None
 

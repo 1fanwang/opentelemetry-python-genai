@@ -54,6 +54,7 @@ _META_AGENT_SPAN = "otel_agent_span"
 _META_WORKFLOW_SPAN = "otel_workflow_span"
 _META_AGENT_NAME = "agent_name"
 _META_AGENT_TYPE = "agent_type"
+_META_LANGCHAIN_AGENT_NAME = "lc_agent_name"
 _META_OTEL_TRACE = "otel_trace"
 
 
@@ -100,10 +101,18 @@ def _has_agent_signals(metadata: dict[str, Any] | None) -> bool:
     """Return True when metadata contains any signal that the chain is an agent."""
     if not metadata:
         return False
-    return bool(
+    if (
         metadata.get(_META_AGENT_SPAN)
         or metadata.get(_META_AGENT_NAME)
         or metadata.get(_META_AGENT_TYPE)
+    ):
+        return True
+
+    # create_agent sets lc_agent_name on the agent run and propagates it to
+    # internal LangGraph nodes. Only the run without a node marker is the agent.
+    return bool(
+        metadata.get(_META_LANGCHAIN_AGENT_NAME)
+        and LANGGRAPH_NODE_KEY not in metadata
     )
 
 
