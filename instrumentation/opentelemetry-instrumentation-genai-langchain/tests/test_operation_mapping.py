@@ -36,6 +36,14 @@ class TestResolveAgentName:
         )
         assert result == "kwargs_name"
 
+    def test_langchain_agent_name_used_before_run_name(self):
+        result = resolve_agent_name(
+            serialized={"name": "serialized_name"},
+            metadata={"lc_agent_name": "langchain_agent"},
+            kwargs={"name": "custom_run_name"},
+        )
+        assert result == "langchain_agent"
+
     def test_serialized_name_used_as_fallback(self):
         result = resolve_agent_name(
             serialized={"name": "serialized_name"},
@@ -190,6 +198,7 @@ class TestClassifyChainRun:
             },
             kwargs={"name": "model"},
             parent_run_id=uuid.uuid4(),
+            parent_agent_name="my_agent",
         )
         assert result is None
 
@@ -202,6 +211,7 @@ class TestClassifyChainRun:
             },
             kwargs={"name": "nested_agent"},
             parent_run_id=uuid.uuid4(),
+            parent_agent_name="parent_agent",
         )
         assert result == OperationName.INVOKE_AGENT
 
@@ -214,6 +224,7 @@ class TestClassifyChainRun:
             },
             kwargs={},
             parent_run_id=uuid.uuid4(),
+            parent_agent_name="parent_agent",
         )
         assert result == OperationName.INVOKE_AGENT
 
@@ -308,6 +319,7 @@ class TestClassifyChainRun:
             metadata={
                 "otel_agent_span": False,
                 "lc_agent_name": "my_agent",
+                "ls_integration": "langchain_create_agent",
             },
             kwargs={},
             parent_run_id=None,

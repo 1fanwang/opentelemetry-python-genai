@@ -9,12 +9,19 @@ the callback-handler logic and the invocation-manager bookkeeping.
 """
 
 import uuid
+from typing import Any, Self
 from unittest import mock
 
 import pytest
+from langchain.agents import create_agent
 from langchain_core.documents import Document
+from langchain_core.language_models.fake_chat_models import (
+    FakeMessagesListChatModel,
+)
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
+from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import tool
 
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
@@ -45,6 +52,23 @@ from opentelemetry.util.genai.types import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class FakeModel(FakeMessagesListChatModel):
+    def bind_tools(
+        self,
+        tools: Any,
+        *,
+        tool_choice: Any = None,
+        **kwargs: Any,
+    ) -> Self:
+        return self
+
+
+@tool
+def noop() -> str:
+    """Do nothing."""
+    return "ok"
 
 
 def _make_agent_inv_mock() -> mock.MagicMock:
@@ -183,6 +207,56 @@ class TestOnChainStartWorkflow:
 
 
 class TestOnChainStartAgent:
+    def test_unnamed_create_agent_emits_agent_span(self):
+        handler, telemetry, _, _ = _make_handler()
+        agent = create_agent(
+            FakeModel(responses=[AIMessage(content="done")]), [noop]
+        )
+        agent.invoke(
+            {"messages": [("user", "hi")]}, {"callbacks": [handler]}
+        )
+
+        assert telemetry.invoke_local_agent.call_args_list == [
+            mock.call(agent_name="LangGraph")
+        ]
+        telemetry.workflow.assert_not_called()
+
+    def test_nested_create_agent_run_name_override_emits_agent_span(self):
+        handler, telemetry, _, _ = _make_handler()
+        agent = create_agent(
+            FakeModel(responses=[AIMessage(content="done")]),
+            [noop],
+            name="planner_agent",
+        )
+        wrapper = RunnableLambda(
+            lambda _: agent.invoke(
+                {"messages": [("user", "hi")]}, {"run_name": "step1"}
+            )
+        ).with_config({"run_name": "planner"})
+        wrapper.invoke({}, {"callbacks": [handler]})
+
+        assert telemetry.invoke_local_agent.call_args_list == [
+            mock.call(agent_name="planner_agent")
+        ]
+
+    def test_lc_agent_name_wins_over_run_name(self):
+        handler, telemetry, _, _ = _make_handler()
+        agent = create_agent(
+            FakeModel(responses=[AIMessage(content="done")]),
+            [noop],
+            name="my_agent",
+        )
+        wrapper = RunnableLambda(
+            lambda _: agent.invoke(
+                {"messages": [("user", "hi")]}, {"run_name": "custom"}
+            )
+        )
+        wrapper.invoke({}, {"callbacks": [handler]})
+
+        telemetry.invoke_local_agent.assert_called_once_with(
+            agent_name="my_agent"
+        )
+
     def test_new_agent_span_created(self):
         handler, telemetry, _, agent_inv = _make_handler()
         run_id = _run_id()

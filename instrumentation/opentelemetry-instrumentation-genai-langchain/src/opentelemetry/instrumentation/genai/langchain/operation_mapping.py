@@ -55,7 +55,9 @@ _META_WORKFLOW_SPAN = "otel_workflow_span"
 _META_AGENT_NAME = "agent_name"
 _META_AGENT_TYPE = "agent_type"
 _META_LANGCHAIN_AGENT_NAME = "lc_agent_name"
+_META_LANGCHAIN_INTEGRATION = "ls_integration"
 _META_OTEL_TRACE = "otel_trace"
+_LANGCHAIN_CREATE_AGENT = "langchain_create_agent"
 
 
 # ---------------------------------------------------------------------------
@@ -72,12 +74,17 @@ def resolve_agent_name(
 
     Checks (in priority order):
     1. ``metadata["agent_name"]``
-    2. ``kwargs["name"]``
-    3. ``serialized["name"]``
-    4. ``metadata["langgraph_node"]`` (if present and not a start node)
+    2. ``metadata["lc_agent_name"]``
+    3. ``kwargs["name"]``
+    4. ``serialized["name"]``
+    5. ``metadata["langgraph_node"]`` (if present and not a start node)
     """
     if metadata:
         name = metadata.get(_META_AGENT_NAME)
+        if name:
+            return str(name)
+
+        name = metadata.get(_META_LANGCHAIN_AGENT_NAME)
         if name:
             return str(name)
 
@@ -99,7 +106,8 @@ def resolve_agent_name(
 
 def _has_agent_signals(
     metadata: dict[str, Any] | None,
-    explicit_run_name: Any,
+    parent_agent_name: str | None,
+    run_name: Any,
 ) -> bool:
     """Return True when metadata contains any signal that the chain is an agent."""
     if not metadata:
@@ -111,15 +119,20 @@ def _has_agent_signals(
     ):
         return True
 
-    # Compare only the callback's explicit name; resolved names may fall back
-    # to an inherited langgraph_node and misclassify a nested agent.
+    if (
+        metadata.get(_META_LANGCHAIN_INTEGRATION)
+        == _LANGCHAIN_CREATE_AGENT
+    ):
+        node_name = metadata.get(LANGGRAPH_NODE_KEY)
+        if node_name is None or str(node_name) != str(run_name):
+            return True
+
     langchain_agent_name = metadata.get(_META_LANGCHAIN_AGENT_NAME)
     return bool(
         langchain_agent_name
         and (
-            LANGGRAPH_NODE_KEY not in metadata
-            or explicit_run_name is None
-            or str(explicit_run_name) == str(langchain_agent_name)
+            parent_agent_name is None
+            or str(parent_agent_name) != str(langchain_agent_name)
         )
     )
 
@@ -207,6 +220,7 @@ def classify_chain_run(
     metadata: dict[str, Any] | None,
     kwargs: dict[str, Any],
     parent_run_id: UUID | None = None,
+    parent_agent_name: str | None = None,
 ) -> str | None:
     """Classify a ``on_chain_start`` callback into a semconv operation.
 
@@ -226,7 +240,7 @@ def classify_chain_run(
         return None
 
     # 2. Agent detection.
-    if _has_agent_signals(metadata, kwargs.get("name")):
+    if _has_agent_signals(metadata, parent_agent_name, kwargs.get("name")):
         return OperationName.INVOKE_AGENT
 
     # 3. Workflow / orchestration detection.

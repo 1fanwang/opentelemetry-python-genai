@@ -70,8 +70,13 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
+        parent_agent = self._find_nearest_agent(parent_run_id)
         operation = classify_chain_run(
-            serialized, metadata, kwargs, parent_run_id
+            serialized,
+            metadata,
+            kwargs,
+            parent_run_id,
+            parent_agent.agent_name if parent_agent else None,
         )
 
         if operation == OperationName.INVOKE_WORKFLOW:
@@ -92,7 +97,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 serialized, metadata, kwargs
             )
             # find if there is an agent already
-            agent_invocation = self._find_nearest_agent(parent_run_id)
+            agent_invocation = parent_agent
             agent_invocation_name = (
                 agent_invocation.agent_name if agent_invocation else None
             )

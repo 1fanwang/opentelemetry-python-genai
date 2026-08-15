@@ -1,7 +1,7 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conformance scenario: langchain ReAct agent via LangGraph create_react_agent."""
+"""Conformance scenario: LangChain agent via create_agent."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ import os
 from typing import Any
 from unittest import mock
 
+from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 
 from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
@@ -81,12 +81,9 @@ class AgentScenario(Scenario):
                     top_p=0.9,
                     seed=100,
                 )
-                agent = create_react_agent(
-                    llm, tools=[multiply, add]
-                ).with_config(
+                agent = create_agent(llm, tools=[multiply, add]).with_config(
                     {
                         "metadata": {
-                            "agent_name": "math_agent",
                             "session_id": "test-session-conformance",
                         },
                     }
