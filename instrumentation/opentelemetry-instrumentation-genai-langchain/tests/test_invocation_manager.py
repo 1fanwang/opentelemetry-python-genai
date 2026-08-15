@@ -206,6 +206,20 @@ def test_get_parent_run_id_returns_none_for_unknown(invocation_manager):
     assert invocation_manager.get_parent_run_id(uuid.uuid4()) is None
 
 
+def test_find_nearest_langgraph_node_returns_ancestor_node(invocation_manager):
+    graph_run_id = uuid.uuid4()
+    tool_run_id = uuid.uuid4()
+    invocation_manager.add_invocation_state(
+        graph_run_id, None, None, langgraph_node="tools"
+    )
+    invocation_manager.add_invocation_state(tool_run_id, graph_run_id, None)
+
+    assert (
+        invocation_manager.find_nearest_langgraph_node(tool_run_id) == "tools"
+    )
+    assert invocation_manager.find_nearest_langgraph_node(uuid.uuid4()) is None
+
+
 def test_get_parent_run_id_returns_registered_parent(invocation_manager):
     parent_id = uuid.uuid4()
     child_id = uuid.uuid4()

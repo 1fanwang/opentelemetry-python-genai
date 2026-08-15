@@ -12,6 +12,7 @@ __all__ = ["_InvocationManager"]
 @dataclass
 class _InvocationState:
     invocation: GenAIInvocation | None
+    langgraph_node: str | None = None
     children: list[UUID] = field(default_factory=lambda: list())
     parent_run_id: UUID | None = None
     ended: bool = False
@@ -30,8 +31,11 @@ class _InvocationManager:
         run_id: UUID,
         parent_run_id: UUID | None,
         invocation: GenAIInvocation | None,
+        langgraph_node: str | None = None,
     ) -> None:
-        invocation_state = _InvocationState(invocation=invocation)
+        invocation_state = _InvocationState(
+            invocation=invocation, langgraph_node=langgraph_node
+        )
 
         if parent_run_id is not None and parent_run_id in self._invocations:
             invocation_state.parent_run_id = parent_run_id
@@ -48,6 +52,17 @@ class _InvocationManager:
     def get_parent_run_id(self, run_id: UUID) -> UUID | None:
         invocation_state = self._invocations.get(run_id)
         return invocation_state.parent_run_id if invocation_state else None
+
+    def find_nearest_langgraph_node(self, run_id: UUID) -> str | None:
+        current: UUID | None = run_id
+        while current is not None:
+            invocation_state = self._invocations.get(current)
+            if invocation_state is None:
+                return None
+            if invocation_state.langgraph_node is not None:
+                return invocation_state.langgraph_node
+            current = invocation_state.parent_run_id
+        return None
 
     def delete_invocation_state(self, run_id: UUID) -> None:
         invocation_state = self._invocations.get(run_id)

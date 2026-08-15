@@ -1,1 +1,1 @@
-Emit invoke_agent for idiomatic create_agent runs, including agents nested inside tool calls
+Emit invoke_agent spans for create_agent runs, including nested agents with inherited LangGraph metadata

@@ -30,6 +30,13 @@ except ImportError:
     create_agent = None
     HAS_CREATE_AGENT = False
 
+try:
+    from langgraph.graph import END, START, MessagesState, StateGraph
+
+    HAS_LANGGRAPH = True
+except ImportError:
+    HAS_LANGGRAPH = False
+
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
@@ -231,6 +238,35 @@ class TestOnChainStartAgent:
         telemetry.workflow.assert_not_called()
 
     @pytest.mark.skipif(
+        not HAS_CREATE_AGENT or not HAS_LANGGRAPH,
+        reason="create_agent and langgraph require newer versions",
+    )
+    def test_nested_unnamed_agent_in_node_named_langgraph_emits_agent_span(
+        self,
+    ):
+        handler, telemetry, _, _ = _make_handler()
+        agent = create_agent(
+            FakeModel(responses=[AIMessage(content="done")]), [noop]
+        )
+
+        def invoke_agent(state: MessagesState) -> dict[str, Any]:
+            return agent.invoke(state)
+
+        graph_builder = StateGraph(MessagesState)
+        graph_builder.add_node("LangGraph", invoke_agent)
+        graph_builder.add_edge(START, "LangGraph")
+        graph_builder.add_edge("LangGraph", END)
+
+        graph_builder.compile().invoke(
+            {"messages": [("user", "hi")]}, {"callbacks": [handler]}
+        )
+
+        assert telemetry.invoke_local_agent.call_args_list == [
+            mock.call(agent_name="LangGraph")
+        ]
+        telemetry.workflow.assert_called_once_with(name="LangGraph")
+
+    @pytest.mark.skipif(
         not HAS_CREATE_AGENT,
         reason="create_agent requires a newer langchain version",
     )
@@ -250,6 +286,51 @@ class TestOnChainStartAgent:
 
         assert telemetry.invoke_local_agent.call_args_list == [
             mock.call(agent_name="planner_agent")
+        ]
+
+    @pytest.mark.skipif(
+        not HAS_CREATE_AGENT,
+        reason="create_agent requires a newer langchain version",
+    )
+    def test_same_name_nested_create_agents_emit_distinct_spans(self):
+        handler, telemetry, _, _ = _make_handler()
+        inner_agent = create_agent(
+            FakeModel(responses=[AIMessage(content="inner done")]),
+            [noop],
+            name="assistant",
+        )
+
+        @tool
+        def delegate() -> str:
+            """Delegate work to another agent."""
+            result = inner_agent.invoke(
+                {"messages": [("user", "finish the task")]}
+            )
+            return str(result["messages"][-1].content)
+
+        outer_agent = create_agent(
+            FakeModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delegate", "args": {}, "id": "call-1"}
+                        ],
+                    ),
+                    AIMessage(content="outer done"),
+                ]
+            ),
+            [delegate],
+            name="assistant",
+        )
+
+        outer_agent.invoke(
+            {"messages": [("user", "start")]}, {"callbacks": [handler]}
+        )
+
+        assert telemetry.invoke_local_agent.call_args_list == [
+            mock.call(agent_name="assistant"),
+            mock.call(agent_name="assistant"),
         ]
 
     @pytest.mark.skipif(

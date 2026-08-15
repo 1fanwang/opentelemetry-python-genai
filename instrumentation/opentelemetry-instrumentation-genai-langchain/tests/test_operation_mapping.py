@@ -199,6 +199,7 @@ class TestClassifyChainRun:
             kwargs={"name": "model"},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="my_agent",
+            parent_langgraph_node="LangGraph",
         )
         assert result is None
 
@@ -212,6 +213,7 @@ class TestClassifyChainRun:
             kwargs={"name": "nested_agent"},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="parent_agent",
+            parent_langgraph_node="tools",
         )
         assert result == OperationName.INVOKE_AGENT
 
@@ -225,6 +227,7 @@ class TestClassifyChainRun:
             kwargs={},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="parent_agent",
+            parent_langgraph_node="tools",
         )
         assert result == OperationName.INVOKE_AGENT
 
