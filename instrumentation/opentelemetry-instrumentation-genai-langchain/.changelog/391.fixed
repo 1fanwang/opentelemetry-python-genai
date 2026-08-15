@@ -1,1 +1,1 @@
-Emit invoke_agent spans for create_agent runs, including nested agents with inherited LangGraph metadata
+Emit invoke_agent spans for create_agent invocations, including agents nested inside tool calls
