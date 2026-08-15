@@ -97,7 +97,10 @@ def resolve_agent_name(
     return None
 
 
-def _has_agent_signals(metadata: dict[str, Any] | None) -> bool:
+def _has_agent_signals(
+    metadata: dict[str, Any] | None,
+    explicit_run_name: Any,
+) -> bool:
     """Return True when metadata contains any signal that the chain is an agent."""
     if not metadata:
         return False
@@ -108,11 +111,16 @@ def _has_agent_signals(metadata: dict[str, Any] | None) -> bool:
     ):
         return True
 
-    # create_agent sets lc_agent_name on the agent run and propagates it to
-    # internal LangGraph nodes. Only the run without a node marker is the agent.
+    # Compare only the callback's explicit name; resolved names may fall back
+    # to an inherited langgraph_node and misclassify a nested agent.
+    langchain_agent_name = metadata.get(_META_LANGCHAIN_AGENT_NAME)
     return bool(
-        metadata.get(_META_LANGCHAIN_AGENT_NAME)
-        and LANGGRAPH_NODE_KEY not in metadata
+        langchain_agent_name
+        and (
+            LANGGRAPH_NODE_KEY not in metadata
+            or explicit_run_name is None
+            or str(explicit_run_name) == str(langchain_agent_name)
+        )
     )
 
 
@@ -218,7 +226,7 @@ def classify_chain_run(
         return None
 
     # 2. Agent detection.
-    if _has_agent_signals(metadata):
+    if _has_agent_signals(metadata, kwargs.get("name")):
         return OperationName.INVOKE_AGENT
 
     # 3. Workflow / orchestration detection.

@@ -188,7 +188,7 @@ class TestClassifyChainRun:
                 "lc_agent_name": "my_agent",
                 "langgraph_node": "model",
             },
-            kwargs={},
+            kwargs={"name": "model"},
             parent_run_id=uuid.uuid4(),
         )
         assert result is None
@@ -196,7 +196,22 @@ class TestClassifyChainRun:
     def test_nested_langchain_agent_is_agent(self):
         result = classify_chain_run(
             serialized={},
-            metadata={"lc_agent_name": "nested_agent"},
+            metadata={
+                "lc_agent_name": "nested_agent",
+                "langgraph_node": "tools",
+            },
+            kwargs={"name": "nested_agent"},
+            parent_run_id=uuid.uuid4(),
+        )
+        assert result == OperationName.INVOKE_AGENT
+
+    def test_nested_langchain_agent_without_run_name_is_agent(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={
+                "lc_agent_name": "nested_agent",
+                "langgraph_node": "tools",
+            },
             kwargs={},
             parent_run_id=uuid.uuid4(),
         )
