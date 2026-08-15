@@ -13,7 +13,6 @@ from typing import Any, Self
 from unittest import mock
 
 import pytest
-from langchain.agents import create_agent
 from langchain_core.documents import Document
 from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
@@ -22,6 +21,14 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
+
+try:
+    from langchain.agents import create_agent
+
+    HAS_CREATE_AGENT = True
+except ImportError:
+    create_agent = None
+    HAS_CREATE_AGENT = False
 
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
@@ -207,20 +214,26 @@ class TestOnChainStartWorkflow:
 
 
 class TestOnChainStartAgent:
+    @pytest.mark.skipif(
+        not HAS_CREATE_AGENT,
+        reason="create_agent requires a newer langchain version",
+    )
     def test_unnamed_create_agent_emits_agent_span(self):
         handler, telemetry, _, _ = _make_handler()
         agent = create_agent(
             FakeModel(responses=[AIMessage(content="done")]), [noop]
         )
-        agent.invoke(
-            {"messages": [("user", "hi")]}, {"callbacks": [handler]}
-        )
+        agent.invoke({"messages": [("user", "hi")]}, {"callbacks": [handler]})
 
         assert telemetry.invoke_local_agent.call_args_list == [
             mock.call(agent_name="LangGraph")
         ]
         telemetry.workflow.assert_not_called()
 
+    @pytest.mark.skipif(
+        not HAS_CREATE_AGENT,
+        reason="create_agent requires a newer langchain version",
+    )
     def test_nested_create_agent_run_name_override_emits_agent_span(self):
         handler, telemetry, _, _ = _make_handler()
         agent = create_agent(
@@ -239,6 +252,10 @@ class TestOnChainStartAgent:
             mock.call(agent_name="planner_agent")
         ]
 
+    @pytest.mark.skipif(
+        not HAS_CREATE_AGENT,
+        reason="create_agent requires a newer langchain version",
+    )
     def test_lc_agent_name_wins_over_run_name(self):
         handler, telemetry, _, _ = _make_handler()
         agent = create_agent(

@@ -119,10 +119,7 @@ def _has_agent_signals(
     ):
         return True
 
-    if (
-        metadata.get(_META_LANGCHAIN_INTEGRATION)
-        == _LANGCHAIN_CREATE_AGENT
-    ):
+    if metadata.get(_META_LANGCHAIN_INTEGRATION) == _LANGCHAIN_CREATE_AGENT:
         node_name = metadata.get(LANGGRAPH_NODE_KEY)
         if node_name is None or str(node_name) != str(run_name):
             return True
