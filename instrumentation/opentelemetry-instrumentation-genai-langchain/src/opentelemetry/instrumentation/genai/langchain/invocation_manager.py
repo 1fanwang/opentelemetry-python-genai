@@ -12,7 +12,6 @@ __all__ = ["_InvocationManager"]
 @dataclass
 class _InvocationState:
     invocation: GenAIInvocation | None
-    has_create_agent_marker: bool = False
     children: list[UUID] = field(default_factory=lambda: list())
     parent_run_id: UUID | None = None
     ended: bool = False
@@ -31,12 +30,8 @@ class _InvocationManager:
         run_id: UUID,
         parent_run_id: UUID | None,
         invocation: GenAIInvocation | None,
-        has_create_agent_marker: bool = False,
     ) -> None:
-        invocation_state = _InvocationState(
-            invocation=invocation,
-            has_create_agent_marker=has_create_agent_marker,
-        )
+        invocation_state = _InvocationState(invocation=invocation)
 
         invocation_state.parent_run_id = parent_run_id
         if parent_run_id is not None and parent_run_id in self._invocations:
@@ -52,27 +47,6 @@ class _InvocationManager:
     def get_parent_run_id(self, run_id: UUID) -> UUID | None:
         invocation_state = self._invocations.get(run_id)
         return invocation_state.parent_run_id if invocation_state else None
-
-    def create_agent_ancestry(self, run_id: UUID | None) -> bool | None:
-        """Return marked, unmarked, or unknown ancestry for ``run_id``.
-
-        ``False`` is returned only after traversal reaches a known root.
-        Missing states and cycles leave the ancestry incomplete, so they return
-        ``None`` rather than being treated as evidence that no marker exists.
-        """
-        current: UUID | None = run_id
-        visited: set[UUID] = set()
-        while current is not None:
-            if current in visited:
-                return None
-            visited.add(current)
-            invocation_state = self._invocations.get(current)
-            if invocation_state is None:
-                return None
-            if invocation_state.has_create_agent_marker:
-                return True
-            current = invocation_state.parent_run_id
-        return False
 
     def delete_invocation_state(self, run_id: UUID) -> None:
         invocation_state = self._invocations.get(run_id)

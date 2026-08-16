@@ -13,6 +13,9 @@ from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
+from opentelemetry.instrumentation.genai.langchain.agent_context import (
+    claim_agent,
+)
 from opentelemetry.instrumentation.genai.langchain.invocation_manager import (
     _InvocationManager,
 )
@@ -71,20 +74,15 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         parent_agent = self._find_nearest_agent(parent_run_id)
-        has_create_agent_marker = bool(
-            metadata
-            and metadata.get("ls_integration") == "langchain_create_agent"
-        )
-        create_agent_ancestry = self._invocation_manager.create_agent_ancestry(
-            parent_run_id
-        )
+        # A claimed announcement is proof this run is a create_agent root, which
+        # the callback metadata alone cannot establish for a nested agent.
+        declared_agent_name = claim_agent()
         operation = classify_chain_run(
             serialized,
             metadata,
             kwargs,
             parent_run_id,
-            parent_agent.agent_name if parent_agent else None,
-            create_agent_ancestry,
+            declared_agent_name,
         )
 
         if operation == OperationName.INVOKE_WORKFLOW:
@@ -97,12 +95,12 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             )
             workflow.input_messages = make_input_message(inputs)
             self._invocation_manager.add_invocation_state(
-                run_id, parent_run_id, workflow, has_create_agent_marker
+                run_id, parent_run_id, workflow
             )
         elif operation == OperationName.INVOKE_AGENT:
             # agent name passed by the user
             suggested_agent_name = resolve_agent_name(
-                serialized, metadata, kwargs
+                serialized, metadata, kwargs, declared_agent_name
             )
             # find if there is an agent already
             agent_invocation = parent_agent
@@ -116,7 +114,13 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     if agent_invocation_name
                     else None
                 )
-                if suggested_agent_name_lower != agent_invocation_name_lower:
+                # A declared agent is its own layer even when it shares its
+                # parent's name, unless the user renamed it - then the rename
+                # already opened the layer and this run would duplicate it.
+                if (
+                    suggested_agent_name == declared_agent_name
+                    or suggested_agent_name_lower != agent_invocation_name_lower
+                ):
                     agent = self._telemetry_handler.invoke_local_agent(
                         agent_name=suggested_agent_name,
                     )
@@ -139,24 +143,24 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                                 break
 
                     self._invocation_manager.add_invocation_state(
-                        run_id, parent_run_id, agent, has_create_agent_marker
+                        run_id, parent_run_id, agent
                     )
                 else:
                     # We create invoke_agent span for the initial chain for agent. All follow-up chains invoked for agent invocation will not create agent span.
                     self._invocation_manager.add_invocation_state(
-                        run_id, parent_run_id, None, has_create_agent_marker
+                        run_id, parent_run_id, None
                     )
             else:
                 # No agent name could be resolved; still register the run_id so that
                 # parent-child traversal (e.g. _find_nearest_agent) is not broken for
                 # any children of this node.
                 self._invocation_manager.add_invocation_state(
-                    run_id, parent_run_id, None, has_create_agent_marker
+                    run_id, parent_run_id, None
                 )
         else:
             # For unclassified chains, we still want to track them in the invocation manager to maintain the parent-child relationships, even though we won't create spans for them.
             self._invocation_manager.add_invocation_state(
-                run_id, parent_run_id, None, has_create_agent_marker
+                run_id, parent_run_id, None
             )
 
     def on_chain_end(
