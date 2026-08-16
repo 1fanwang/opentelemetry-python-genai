@@ -292,7 +292,7 @@ class TestOnChainStartAgent:
         not HAS_CREATE_AGENT,
         reason="create_agent requires a newer langchain version",
     )
-    def test_same_name_nested_create_agents_emit_distinct_spans(self):
+    def test_nested_create_agent_is_known_limitation(self):
         handler, telemetry, _, _ = _make_handler()
         inner_agent = create_agent(
             FakeModel(responses=[AIMessage(content="inner done")]),
@@ -329,7 +329,6 @@ class TestOnChainStartAgent:
         )
 
         assert telemetry.invoke_local_agent.call_args_list == [
-            mock.call(agent_name="assistant"),
             mock.call(agent_name="assistant"),
         ]
 

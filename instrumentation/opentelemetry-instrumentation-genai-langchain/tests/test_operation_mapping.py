@@ -199,37 +199,39 @@ class TestClassifyChainRun:
             kwargs={"name": "model"},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="my_agent",
-            parent_langgraph_node="LangGraph",
+            has_create_agent_ancestor=True,
         )
         assert result is None
 
-    def test_nested_langchain_agent_is_agent(self):
+    def test_nested_langchain_agent_with_inherited_marker_is_not_agent(self):
         result = classify_chain_run(
             serialized={},
             metadata={
                 "lc_agent_name": "nested_agent",
+                "ls_integration": "langchain_create_agent",
                 "langgraph_node": "tools",
             },
             kwargs={"name": "nested_agent"},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="parent_agent",
-            parent_langgraph_node="tools",
+            has_create_agent_ancestor=True,
         )
-        assert result == OperationName.INVOKE_AGENT
+        assert result is None
 
-    def test_nested_langchain_agent_without_run_name_is_agent(self):
+    def test_nested_langchain_agent_without_run_name_is_not_agent(self):
         result = classify_chain_run(
             serialized={},
             metadata={
                 "lc_agent_name": "nested_agent",
+                "ls_integration": "langchain_create_agent",
                 "langgraph_node": "tools",
             },
             kwargs={},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="parent_agent",
-            parent_langgraph_node="tools",
+            has_create_agent_ancestor=True,
         )
-        assert result == OperationName.INVOKE_AGENT
+        assert result is None
 
     def test_explicit_otel_agent_metadata_overrides_node_inference(self):
         result = classify_chain_run(

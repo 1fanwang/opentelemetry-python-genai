@@ -1,1 +1,1 @@
-Emit invoke_agent spans for create_agent invocations, including agents nested inside tool calls
+Emit invoke_agent spans for LangChain create_agent graph roots without misclassifying their internal graph runs

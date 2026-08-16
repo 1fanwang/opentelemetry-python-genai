@@ -206,18 +206,27 @@ def test_get_parent_run_id_returns_none_for_unknown(invocation_manager):
     assert invocation_manager.get_parent_run_id(uuid.uuid4()) is None
 
 
-def test_find_nearest_langgraph_node_returns_ancestor_node(invocation_manager):
-    graph_run_id = uuid.uuid4()
-    tool_run_id = uuid.uuid4()
+def test_has_create_agent_ancestor(invocation_manager):
+    agent_run_id = uuid.uuid4()
+    child_run_id = uuid.uuid4()
     invocation_manager.add_invocation_state(
-        graph_run_id, None, None, langgraph_node="tools"
+        agent_run_id, None, None, has_create_agent_marker=True
     )
-    invocation_manager.add_invocation_state(tool_run_id, graph_run_id, None)
+    invocation_manager.add_invocation_state(child_run_id, agent_run_id, None)
 
-    assert (
-        invocation_manager.find_nearest_langgraph_node(tool_run_id) == "tools"
-    )
-    assert invocation_manager.find_nearest_langgraph_node(uuid.uuid4()) is None
+    assert invocation_manager.has_create_agent_ancestor(child_run_id)
+    assert not invocation_manager.has_create_agent_ancestor(uuid.uuid4())
+    assert not invocation_manager.has_create_agent_ancestor(None)
+
+
+def test_has_create_agent_ancestor_handles_cycle(invocation_manager):
+    first_run_id = uuid.uuid4()
+    second_run_id = uuid.uuid4()
+    invocation_manager.add_invocation_state(first_run_id, None, None)
+    invocation_manager.add_invocation_state(second_run_id, first_run_id, None)
+    invocation_manager._invocations[first_run_id].parent_run_id = second_run_id
+
+    assert not invocation_manager.has_create_agent_ancestor(first_run_id)
 
 
 def test_get_parent_run_id_returns_registered_parent(invocation_manager):

@@ -12,7 +12,7 @@ __all__ = ["_InvocationManager"]
 @dataclass
 class _InvocationState:
     invocation: GenAIInvocation | None
-    langgraph_node: str | None = None
+    has_create_agent_marker: bool = False
     children: list[UUID] = field(default_factory=lambda: list())
     parent_run_id: UUID | None = None
     ended: bool = False
@@ -31,10 +31,11 @@ class _InvocationManager:
         run_id: UUID,
         parent_run_id: UUID | None,
         invocation: GenAIInvocation | None,
-        langgraph_node: str | None = None,
+        has_create_agent_marker: bool = False,
     ) -> None:
         invocation_state = _InvocationState(
-            invocation=invocation, langgraph_node=langgraph_node
+            invocation=invocation,
+            has_create_agent_marker=has_create_agent_marker,
         )
 
         if parent_run_id is not None and parent_run_id in self._invocations:
@@ -53,16 +54,20 @@ class _InvocationManager:
         invocation_state = self._invocations.get(run_id)
         return invocation_state.parent_run_id if invocation_state else None
 
-    def find_nearest_langgraph_node(self, run_id: UUID) -> str | None:
+    def has_create_agent_ancestor(self, run_id: UUID | None) -> bool:
         current: UUID | None = run_id
+        visited: set[UUID] = set()
         while current is not None:
+            if current in visited:
+                return False
+            visited.add(current)
             invocation_state = self._invocations.get(current)
             if invocation_state is None:
-                return None
-            if invocation_state.langgraph_node is not None:
-                return invocation_state.langgraph_node
+                return False
+            if invocation_state.has_create_agent_marker:
+                return True
             current = invocation_state.parent_run_id
-        return None
+        return False
 
     def delete_invocation_state(self, run_id: UUID) -> None:
         invocation_state = self._invocations.get(run_id)

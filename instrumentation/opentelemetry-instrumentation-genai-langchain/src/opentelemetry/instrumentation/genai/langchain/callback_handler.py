@@ -17,7 +17,6 @@ from opentelemetry.instrumentation.genai.langchain.invocation_manager import (
     _InvocationManager,
 )
 from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
-    LANGGRAPH_NODE_KEY,
     OperationName,
     classify_chain_run,
     resolve_agent_name,
@@ -72,15 +71,12 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         parent_agent = self._find_nearest_agent(parent_run_id)
-        parent_langgraph_node = (
-            self._invocation_manager.find_nearest_langgraph_node(parent_run_id)
-            if parent_run_id
-            else None
+        has_create_agent_marker = bool(
+            metadata
+            and metadata.get("ls_integration") == "langchain_create_agent"
         )
-        langgraph_node = (
-            str(metadata[LANGGRAPH_NODE_KEY])
-            if metadata and metadata.get(LANGGRAPH_NODE_KEY) is not None
-            else None
+        has_create_agent_ancestor = (
+            self._invocation_manager.has_create_agent_ancestor(parent_run_id)
         )
         operation = classify_chain_run(
             serialized,
@@ -88,7 +84,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             kwargs,
             parent_run_id,
             parent_agent.agent_name if parent_agent else None,
-            parent_langgraph_node,
+            has_create_agent_ancestor,
         )
 
         if operation == OperationName.INVOKE_WORKFLOW:
@@ -101,7 +97,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             )
             workflow.input_messages = make_input_message(inputs)
             self._invocation_manager.add_invocation_state(
-                run_id, parent_run_id, workflow, langgraph_node
+                run_id, parent_run_id, workflow, has_create_agent_marker
             )
         elif operation == OperationName.INVOKE_AGENT:
             # agent name passed by the user
@@ -120,13 +116,8 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     if agent_invocation_name
                     else None
                 )
-                is_create_agent_run = bool(
-                    metadata
-                    and metadata.get("ls_integration")
-                    == "langchain_create_agent"
-                )
                 if (
-                    is_create_agent_run
+                    has_create_agent_marker
                     or suggested_agent_name_lower
                     != agent_invocation_name_lower
                 ):
@@ -152,24 +143,24 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                                 break
 
                     self._invocation_manager.add_invocation_state(
-                        run_id, parent_run_id, agent, langgraph_node
+                        run_id, parent_run_id, agent, has_create_agent_marker
                     )
                 else:
                     # We create invoke_agent span for the initial chain for agent. All follow-up chains invoked for agent invocation will not create agent span.
                     self._invocation_manager.add_invocation_state(
-                        run_id, parent_run_id, None, langgraph_node
+                        run_id, parent_run_id, None, has_create_agent_marker
                     )
             else:
                 # No agent name could be resolved; still register the run_id so that
                 # parent-child traversal (e.g. _find_nearest_agent) is not broken for
                 # any children of this node.
                 self._invocation_manager.add_invocation_state(
-                    run_id, parent_run_id, None, langgraph_node
+                    run_id, parent_run_id, None, has_create_agent_marker
                 )
         else:
             # For unclassified chains, we still want to track them in the invocation manager to maintain the parent-child relationships, even though we won't create spans for them.
             self._invocation_manager.add_invocation_state(
-                run_id, parent_run_id, None, langgraph_node
+                run_id, parent_run_id, None, has_create_agent_marker
             )
 
     def on_chain_end(
