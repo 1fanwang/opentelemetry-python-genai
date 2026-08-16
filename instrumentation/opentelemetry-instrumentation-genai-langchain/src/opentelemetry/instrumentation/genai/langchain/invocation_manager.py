@@ -38,9 +38,8 @@ class _InvocationManager:
             has_create_agent_marker=has_create_agent_marker,
         )
 
+        invocation_state.parent_run_id = parent_run_id
         if parent_run_id is not None and parent_run_id in self._invocations:
-            invocation_state.parent_run_id = parent_run_id
-
             parent_invocation_state = self._invocations[parent_run_id]
             parent_invocation_state.children.append(run_id)
 
@@ -54,16 +53,22 @@ class _InvocationManager:
         invocation_state = self._invocations.get(run_id)
         return invocation_state.parent_run_id if invocation_state else None
 
-    def has_create_agent_ancestor(self, run_id: UUID | None) -> bool:
+    def create_agent_ancestry(self, run_id: UUID | None) -> bool | None:
+        """Return marked, unmarked, or unknown ancestry for ``run_id``.
+
+        ``False`` is returned only after traversal reaches a known root.
+        Missing states and cycles leave the ancestry incomplete, so they return
+        ``None`` rather than being treated as evidence that no marker exists.
+        """
         current: UUID | None = run_id
         visited: set[UUID] = set()
         while current is not None:
             if current in visited:
-                return False
+                return None
             visited.add(current)
             invocation_state = self._invocations.get(current)
             if invocation_state is None:
-                return False
+                return None
             if invocation_state.has_create_agent_marker:
                 return True
             current = invocation_state.parent_run_id

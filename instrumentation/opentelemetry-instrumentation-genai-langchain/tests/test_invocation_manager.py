@@ -79,6 +79,9 @@ def test_add_invocation_state_with_nonexistent_parent(
 
     assert invocation_manager.get_invocation(run_id) == mock_invocation
     assert len(invocation_manager._invocations) == 1
+    assert (
+        invocation_manager.get_parent_run_id(run_id) == nonexistent_parent_id
+    )
 
 
 def test_get_nonexistent_invocation(invocation_manager):
@@ -206,7 +209,7 @@ def test_get_parent_run_id_returns_none_for_unknown(invocation_manager):
     assert invocation_manager.get_parent_run_id(uuid.uuid4()) is None
 
 
-def test_has_create_agent_ancestor(invocation_manager):
+def test_create_agent_ancestry(invocation_manager):
     agent_run_id = uuid.uuid4()
     child_run_id = uuid.uuid4()
     invocation_manager.add_invocation_state(
@@ -214,19 +217,19 @@ def test_has_create_agent_ancestor(invocation_manager):
     )
     invocation_manager.add_invocation_state(child_run_id, agent_run_id, None)
 
-    assert invocation_manager.has_create_agent_ancestor(child_run_id)
-    assert not invocation_manager.has_create_agent_ancestor(uuid.uuid4())
-    assert not invocation_manager.has_create_agent_ancestor(None)
+    assert invocation_manager.create_agent_ancestry(child_run_id) is True
+    assert invocation_manager.create_agent_ancestry(uuid.uuid4()) is None
+    assert invocation_manager.create_agent_ancestry(None) is False
 
 
-def test_has_create_agent_ancestor_handles_cycle(invocation_manager):
+def test_create_agent_ancestry_is_unknown_for_cycle(invocation_manager):
     first_run_id = uuid.uuid4()
     second_run_id = uuid.uuid4()
     invocation_manager.add_invocation_state(first_run_id, None, None)
     invocation_manager.add_invocation_state(second_run_id, first_run_id, None)
     invocation_manager._invocations[first_run_id].parent_run_id = second_run_id
 
-    assert not invocation_manager.has_create_agent_ancestor(first_run_id)
+    assert invocation_manager.create_agent_ancestry(first_run_id) is None
 
 
 def test_get_parent_run_id_returns_registered_parent(invocation_manager):

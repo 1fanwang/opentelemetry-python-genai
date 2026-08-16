@@ -107,7 +107,7 @@ def resolve_agent_name(
 def _has_agent_signals(
     metadata: dict[str, Any] | None,
     parent_agent_name: str | None,
-    has_create_agent_ancestor: bool,
+    create_agent_ancestry: bool | None,
 ) -> bool:
     """Return True when metadata contains any signal that the chain is an agent."""
     if not metadata:
@@ -120,7 +120,7 @@ def _has_agent_signals(
         return True
 
     if metadata.get(_META_LANGCHAIN_INTEGRATION) == _LANGCHAIN_CREATE_AGENT:
-        return not has_create_agent_ancestor
+        return create_agent_ancestry is False
 
     langchain_agent_name = metadata.get(_META_LANGCHAIN_AGENT_NAME)
     return bool(
@@ -216,7 +216,7 @@ def classify_chain_run(
     kwargs: dict[str, Any],
     parent_run_id: UUID | None = None,
     parent_agent_name: str | None = None,
-    has_create_agent_ancestor: bool = False,
+    create_agent_ancestry: bool | None = False,
 ) -> str | None:
     """Classify a ``on_chain_start`` callback into a semconv operation.
 
@@ -236,9 +236,7 @@ def classify_chain_run(
         return None
 
     # 2. Agent detection.
-    if _has_agent_signals(
-        metadata, parent_agent_name, has_create_agent_ancestor
-    ):
+    if _has_agent_signals(metadata, parent_agent_name, create_agent_ancestry):
         return OperationName.INVOKE_AGENT
 
     # 3. Workflow / orchestration detection.

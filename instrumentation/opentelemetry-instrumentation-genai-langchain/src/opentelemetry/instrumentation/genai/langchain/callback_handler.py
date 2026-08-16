@@ -75,8 +75,8 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             metadata
             and metadata.get("ls_integration") == "langchain_create_agent"
         )
-        has_create_agent_ancestor = (
-            self._invocation_manager.has_create_agent_ancestor(parent_run_id)
+        create_agent_ancestry = self._invocation_manager.create_agent_ancestry(
+            parent_run_id
         )
         operation = classify_chain_run(
             serialized,
@@ -84,7 +84,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             kwargs,
             parent_run_id,
             parent_agent.agent_name if parent_agent else None,
-            has_create_agent_ancestor,
+            create_agent_ancestry,
         )
 
         if operation == OperationName.INVOKE_WORKFLOW:

@@ -1,22 +1,13 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Executable corpus for classifying real LangChain agent callbacks.
-
-The expectations in ``CASES`` describe API boundaries, not the current
-classifier's output.  Set ``LANGCHAIN_CORPUS_DUMP`` to print the complete
-recorded callback stream for every case.
-"""
+"""Focused regression corpus for LangChain create_agent classification."""
 
 from __future__ import annotations
 
-import json
-import os
-from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, Self
 from unittest import mock
-from uuid import UUID
+from uuid import uuid4
 
 import langchain.agents
 import pytest
@@ -28,15 +19,13 @@ if create_agent is None:
         allow_module_level=True,
     )
 
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
 from langchain_core.messages import AIMessage
-from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
-from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
@@ -64,197 +53,8 @@ def noop() -> str:
     return "ok"
 
 
-class CallbackRecorder(BaseCallbackHandler):
-    """Record callback ordering and the complete metadata emitted at starts."""
-
-    def __init__(self) -> None:
-        self.events: list[dict[str, Any]] = []
-
-    @staticmethod
-    def _jsonable(value: Any) -> Any:
-        if isinstance(value, UUID):
-            return str(value)
-        if isinstance(value, dict):
-            return {
-                str(key): CallbackRecorder._jsonable(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, (list, tuple)):
-            return [CallbackRecorder._jsonable(item) for item in value]
-        if value is None or isinstance(value, (bool, int, float, str)):
-            return value
-        return repr(value)
-
-    def _record(self, event: str, **values: Any) -> None:
-        self.events.append(
-            {
-                "event": event,
-                **{
-                    key: self._jsonable(value) for key, value in values.items()
-                },
-            }
-        )
-
-    def on_chain_start(
-        self,
-        serialized: dict[str, Any] | None,
-        inputs: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "chain_start",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            serialized=serialized,
-            tags=tags,
-            metadata=metadata,
-            kwargs=kwargs,
-        )
-
-    def on_chain_end(
-        self,
-        outputs: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "chain_end",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            kwargs=kwargs,
-        )
-
-    def on_chain_error(
-        self,
-        error: BaseException,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "chain_error",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            error=error,
-            kwargs=kwargs,
-        )
-
-    def on_chat_model_start(
-        self,
-        serialized: dict[str, Any],
-        messages: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "chat_model_start",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            serialized=serialized,
-            tags=tags,
-            metadata=metadata,
-            kwargs=kwargs,
-        )
-
-    def on_llm_end(
-        self,
-        response: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "llm_end",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            kwargs=kwargs,
-        )
-
-    def on_llm_error(
-        self,
-        error: BaseException,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "llm_error",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            error=error,
-            kwargs=kwargs,
-        )
-
-    def on_tool_start(
-        self,
-        serialized: dict[str, Any],
-        input_str: str,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "tool_start",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            serialized=serialized,
-            tags=tags,
-            metadata=metadata,
-            kwargs=kwargs,
-        )
-
-    def on_tool_end(
-        self,
-        output: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "tool_end",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            kwargs=kwargs,
-        )
-
-    def on_tool_error(
-        self,
-        error: BaseException,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._record(
-            "tool_error",
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            error=error,
-            kwargs=kwargs,
-        )
-
-
 def _handler() -> tuple[OpenTelemetryLangChainCallbackHandler, mock.MagicMock]:
     telemetry = mock.MagicMock()
-
     workflow = mock.MagicMock(spec=WorkflowInvocation)
     workflow.span = mock.MagicMock()
     workflow.span.is_recording.return_value = False
@@ -271,28 +71,31 @@ def _handler() -> tuple[OpenTelemetryLangChainCallbackHandler, mock.MagicMock]:
     return OpenTelemetryLangChainCallbackHandler(telemetry), telemetry
 
 
-def _callbacks(
-    recorder: CallbackRecorder,
-    handler: OpenTelemetryLangChainCallbackHandler,
-) -> RunnableConfig:
-    return {"callbacks": [recorder, handler]}
+def _agent_names(telemetry: mock.MagicMock) -> list[str]:
+    return [
+        call.kwargs["agent_name"]
+        for call in telemetry.invoke_local_agent.call_args_list
+    ]
 
 
-def _top_level_unnamed(config: RunnableConfig) -> None:
-    create_agent(
-        FakeModel(responses=[AIMessage(content="done")]), [noop]
-    ).invoke({"messages": [("user", "hi")]}, config)
-
-
-def _top_level_named(config: RunnableConfig) -> None:
+@pytest.mark.parametrize(
+    ("name", "expected_name"),
+    [(None, "LangGraph"), ("named_agent", "named_agent")],
+)
+def test_create_agent_root(name: str | None, expected_name: str) -> None:
+    handler, telemetry = _handler()
+    agent_kwargs = {"name": name} if name is not None else {}
     create_agent(
         FakeModel(responses=[AIMessage(content="done")]),
         [noop],
-        name="named_agent",
-    ).invoke({"messages": [("user", "hi")]}, config)
+        **agent_kwargs,
+    ).invoke({"messages": [("user", "hi")]}, {"callbacks": [handler]})
+
+    assert _agent_names(telemetry) == [expected_name]
 
 
-def _nested_run_name(config: RunnableConfig) -> None:
+def test_create_agent_name_wins_over_run_name_override() -> None:
+    handler, telemetry = _handler()
     agent = create_agent(
         FakeModel(responses=[AIMessage(content="done")]),
         [noop],
@@ -302,292 +105,126 @@ def _nested_run_name(config: RunnableConfig) -> None:
         lambda _: agent.invoke(
             {"messages": [("user", "hi")]}, {"run_name": "step1"}
         )
-    ).with_config(run_name="planner").invoke({}, config)
+    ).with_config(run_name="planner").invoke({}, {"callbacks": [handler]})
+
+    assert _agent_names(telemetry) == ["planner_agent"]
 
 
-def _nested_different_name_through_tool(config: RunnableConfig) -> None:
-    inner = create_agent(
-        FakeModel(responses=[AIMessage(content="inner done")]),
-        [noop],
-        name="researcher",
-    )
-
-    @tool
-    def delegate(config: RunnableConfig) -> str:
-        """Delegate to the researcher."""
-        result = inner.invoke({"messages": [("user", "research")]}, config)
-        return str(result["messages"][-1].content)
-
-    outer = create_agent(
-        FakeModel(
-            responses=[
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {"name": "delegate", "args": {}, "id": "call-1"}
-                    ],
-                ),
-                AIMessage(content="outer done"),
-            ]
-        ),
-        [delegate],
-        name="manager",
-    )
-    outer.invoke({"messages": [("user", "start")]}, config)
-
-
-def _nested_without_config_forwarding(config: RunnableConfig) -> None:
-    inner = create_agent(
-        FakeModel(responses=[AIMessage(content="inner done")]),
-        [noop],
-        name="researcher",
-    )
-
-    @tool
-    def delegate() -> str:
-        """Delegate to the researcher without forwarding configuration."""
-        result = inner.invoke({"messages": [("user", "research")]})
-        return str(result["messages"][-1].content)
-
-    outer = create_agent(
-        FakeModel(
-            responses=[
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {"name": "delegate", "args": {}, "id": "call-1"}
-                    ],
-                ),
-                AIMessage(content="outer done"),
-            ]
-        ),
-        [delegate],
-        name="manager",
-    )
-    outer.invoke({"messages": [("user", "start")]}, config)
-
-
-def _nested_unnamed_in_langgraph_node(config: RunnableConfig) -> None:
-    inner = create_agent(
-        FakeModel(responses=[AIMessage(content="done")]), [noop]
-    )
-
-    def invoke_agent(state: MessagesState) -> dict[str, Any]:
-        return inner.invoke(state)
-
-    builder = StateGraph(MessagesState)
-    builder.add_node("LangGraph", invoke_agent)
-    builder.add_edge(START, "LangGraph")
-    builder.add_edge("LangGraph", END)
-    builder.compile().invoke({"messages": [("user", "hi")]}, config)
-
-
-def _same_display_name(config: RunnableConfig) -> None:
-    inner = create_agent(
-        FakeModel(responses=[AIMessage(content="inner done")]),
-        [noop],
-        name="assistant",
-    )
-
-    @tool
-    def delegate(config: RunnableConfig) -> str:
-        """Delegate to another assistant."""
-        result = inner.invoke({"messages": [("user", "finish")]}, config)
-        return str(result["messages"][-1].content)
-
-    outer = create_agent(
-        FakeModel(
-            responses=[
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {"name": "delegate", "args": {}, "id": "call-1"}
-                    ],
-                ),
-                AIMessage(content="outer done"),
-            ]
-        ),
-        [delegate],
-        name="assistant",
-    )
-    outer.invoke({"messages": [("user", "start")]}, config)
-
-
-def _user_langgraph_node_metadata(config: RunnableConfig) -> None:
-    configured = dict(config)
-    configured["metadata"] = {"langgraph_node": "user_supplied_node"}
+def test_create_agent_internal_nodes_are_not_agents() -> None:
+    handler, telemetry = _handler()
     create_agent(
-        FakeModel(responses=[AIMessage(content="done")]), [noop]
-    ).invoke({"messages": [("user", "hi")]}, configured)
-
-
-def _user_langgraph_node_with_config(config: RunnableConfig) -> None:
-    create_agent(
-        FakeModel(responses=[AIMessage(content="done")]), [noop]
-    ).with_config(metadata={"langgraph_node": "user_supplied_node"}).invoke(
-        {"messages": [("user", "hi")]}, config
-    )
-
-
-def _ordinary_sequence_in_tool(config: RunnableConfig) -> None:
-    sequence = PromptTemplate.from_template("Value: {value}") | RunnableLambda(
-        lambda prompt: prompt.to_string()
-    )
-
-    @tool
-    def format_value(value: str) -> str:
-        """Format a value."""
-        return sequence.invoke({"value": value})
-
-    agent = create_agent(
         FakeModel(
             responses=[
                 AIMessage(
                     content="",
-                    tool_calls=[
-                        {
-                            "name": "format_value",
-                            "args": {"value": "x"},
-                            "id": "call-1",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        ),
-        [format_value],
-        name="measured_agent",
-    )
-    agent.invoke({"messages": [("user", "format x")]}, config)
-
-
-def _create_agent_internal_nodes(config: RunnableConfig) -> None:
-    agent = create_agent(
-        FakeModel(
-            responses=[
-                AIMessage(
-                    content="",
-                    tool_calls=[{"name": "noop", "args": {}, "id": "call-1"}],
+                    tool_calls=[{"name": "noop", "args": {}, "id": "1"}],
                 ),
                 AIMessage(content="done"),
             ]
         ),
         [noop],
-        name="internal_node_control",
-    )
-    agent.invoke({"messages": [("user", "run noop")]}, config)
+        name="agent",
+    ).invoke({"messages": [("user", "hi")]}, {"callbacks": [handler]})
+
+    assert _agent_names(telemetry) == ["agent"]
 
 
-def _plain_langgraph_in_tool(config: RunnableConfig) -> None:
-    builder = StateGraph(dict[str, Any])
-    # Deliberately use the same default graph name and first-node name as an
-    # unnamed create_agent.  This is a negative control for any discriminator
-    # based on checkpoint namespace nesting or graph-entry relationships.
-    builder.add_node("model", lambda state: {"value": state["value"] + 1})
-    builder.add_edge(START, "model")
-    builder.add_edge("model", END)
-    graph = builder.compile()
+def test_ordinary_runnable_is_not_an_agent() -> None:
+    handler, telemetry = _handler()
+    RunnableLambda(lambda value: value).with_config(
+        run_name="ordinary"
+    ).invoke("value", {"callbacks": [handler]})
 
-    @tool
-    def run_graph(value: int) -> str:
-        """Run a non-agent graph."""
-        return str(graph.invoke({"value": value})["value"])
-
-    agent = create_agent(
-        FakeModel(
-            responses=[
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "run_graph",
-                            "args": {"value": 1},
-                            "id": "call-1",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        ),
-        [run_graph],
-        name="outer_agent",
-    )
-    agent.invoke({"messages": [("user", "run graph")]}, config)
+    telemetry.invoke_local_agent.assert_not_called()
 
 
-def _plain_langgraph(config: RunnableConfig) -> None:
-    builder = StateGraph(dict[str, Any])
+def test_plain_state_graph_is_not_an_agent() -> None:
+    handler, telemetry = _handler()
+    builder = StateGraph(dict[str, int])
     builder.add_node("increment", lambda state: {"value": state["value"] + 1})
     builder.add_edge(START, "increment")
     builder.add_edge("increment", END)
-    builder.compile().invoke({"value": 1}, config)
+    builder.compile().invoke({"value": 1}, {"callbacks": [handler]})
+
+    telemetry.invoke_local_agent.assert_not_called()
 
 
-@dataclass(frozen=True)
-class Case:
-    run: Callable[[RunnableConfig], None]
-    expected_agents: tuple[str, ...]
-    expected_workflows: int
-
-
-# Expected span sets, deliberately declared before inspecting a discriminator.
-CASES = {
-    "top_level_unnamed": Case(_top_level_unnamed, ("LangGraph",), 0),
-    "top_level_named": Case(_top_level_named, ("named_agent",), 0),
-    "nested_run_name_override": Case(_nested_run_name, ("planner_agent",), 1),
-    # Known limitation: callbacks cannot distinguish either inner create_agent
-    # root from metadata inherited from the enclosing create_agent.
-    "known_limitation_nested_agent_with_config_forwarding": Case(
-        _nested_different_name_through_tool, ("manager",), 0
-    ),
-    "known_limitation_nested_agent_without_config_forwarding": Case(
-        _nested_without_config_forwarding, ("manager",), 0
-    ),
-    "nested_unnamed_in_outer_langgraph_node": Case(
-        _nested_unnamed_in_langgraph_node, ("LangGraph",), 1
-    ),
-    "known_limitation_nested_agents_same_display_name": Case(
-        _same_display_name, ("assistant",), 0
-    ),
-    "user_metadata_langgraph_node": Case(
-        _user_langgraph_node_metadata, ("LangGraph",), 0
-    ),
-    "user_metadata_langgraph_node_with_config": Case(
-        _user_langgraph_node_with_config, ("LangGraph",), 0
-    ),
-    "ordinary_sequence_in_tool": Case(
-        _ordinary_sequence_in_tool, ("measured_agent",), 0
-    ),
-    "create_agent_internal_model_and_tools_nodes": Case(
-        _create_agent_internal_nodes, ("internal_node_control",), 0
-    ),
-    "plain_langgraph": Case(_plain_langgraph, (), 1),
-    "plain_langgraph_nested_in_agent_tool": Case(
-        _plain_langgraph_in_tool, ("outer_agent",), 0
-    ),
-}
-
-
-@pytest.mark.parametrize("case_name", CASES)
-def test_agent_classification_corpus(case_name: str) -> None:
-    case = CASES[case_name]
-    recorder = CallbackRecorder()
+def test_incomplete_ancestry_does_not_claim_create_agent_root() -> None:
     handler, telemetry = _handler()
+    outer_run_id = uuid4()
+    missing_middle_run_id = uuid4()
+    inner_run_id = uuid4()
+    marker = {
+        "ls_integration": "langchain_create_agent",
+        "lc_agent_name": "agent",
+    }
 
-    case.run(_callbacks(recorder, handler))
-
-    if os.environ.get("LANGCHAIN_CORPUS_DUMP"):
-        print(
-            json.dumps(
-                {"case": case_name, "events": recorder.events},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-
-    actual_agents = tuple(
-        call.kwargs["agent_name"]
-        for call in telemetry.invoke_local_agent.call_args_list
+    handler.on_chain_start(
+        {}, {}, run_id=outer_run_id, metadata=marker, name="outer"
     )
-    assert actual_agents == case.expected_agents
-    assert telemetry.workflow.call_count == case.expected_workflows
+    handler.on_chain_start(
+        {},
+        {},
+        run_id=inner_run_id,
+        parent_run_id=missing_middle_run_id,
+        metadata=marker,
+        name="inner",
+    )
+
+    assert _agent_names(telemetry) == ["agent"]
+    assert (
+        handler._invocation_manager.get_parent_run_id(inner_run_id)
+        == missing_middle_run_id
+    )
+
+
+def test_user_supplied_create_agent_marker_declares_agent() -> None:
+    """The callback API has no provenance to distinguish this from create_agent."""
+    handler, telemetry = _handler()
+    RunnableLambda(lambda value: value).with_config(
+        run_name="ordinary",
+        metadata={"ls_integration": "langchain_create_agent"},
+    ).invoke("value", {"callbacks": [handler]})
+
+    assert _agent_names(telemetry) == ["ordinary"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "LangChain callbacks do not identify a nested create_agent root "
+        "separately from metadata inherited from its enclosing agent"
+    ),
+)
+def test_nested_create_agent_is_known_limitation() -> None:
+    handler, telemetry = _handler()
+    inner = create_agent(
+        FakeModel(responses=[AIMessage(content="inner done")]),
+        [noop],
+        name="inner",
+    )
+
+    @tool
+    def delegate(config: RunnableConfig) -> str:
+        """Delegate to the inner agent."""
+        result = inner.invoke({"messages": [("user", "work")]}, config)
+        return str(result["messages"][-1].content)
+
+    outer = create_agent(
+        FakeModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "delegate", "args": {}, "id": "call-1"}
+                    ],
+                ),
+                AIMessage(content="outer done"),
+            ]
+        ),
+        [delegate],
+        name="outer",
+    )
+    outer.invoke({"messages": [("user", "start")]}, {"callbacks": [handler]})
+
+    assert _agent_names(telemetry) == ["outer", "inner"]

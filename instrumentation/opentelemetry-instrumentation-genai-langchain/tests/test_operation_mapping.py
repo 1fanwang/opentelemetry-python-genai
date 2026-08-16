@@ -199,7 +199,7 @@ class TestClassifyChainRun:
             kwargs={"name": "model"},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="my_agent",
-            has_create_agent_ancestor=True,
+            create_agent_ancestry=True,
         )
         assert result is None
 
@@ -214,7 +214,7 @@ class TestClassifyChainRun:
             kwargs={"name": "nested_agent"},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="parent_agent",
-            has_create_agent_ancestor=True,
+            create_agent_ancestry=True,
         )
         assert result is None
 
@@ -229,7 +229,17 @@ class TestClassifyChainRun:
             kwargs={},
             parent_run_id=uuid.uuid4(),
             parent_agent_name="parent_agent",
-            has_create_agent_ancestor=True,
+            create_agent_ancestry=True,
+        )
+        assert result is None
+
+    def test_create_agent_marker_with_unknown_ancestry_is_not_agent(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={"ls_integration": "langchain_create_agent"},
+            kwargs={"name": "inner"},
+            parent_run_id=uuid.uuid4(),
+            create_agent_ancestry=None,
         )
         assert result is None
 
