@@ -32,6 +32,7 @@ from opentelemetry.instrumentation.genai.langchain.callback_handler import (
 )
 from opentelemetry.util.genai.invocation import (
     AgentInvocation,
+    ToolInvocation,
     WorkflowInvocation,
 )
 
@@ -68,6 +69,11 @@ def _handler() -> tuple[OpenTelemetryLangChainCallbackHandler, mock.MagicMock]:
         return invocation
 
     telemetry.invoke_local_agent.side_effect = make_agent
+
+    tool_invocation = mock.MagicMock(spec=ToolInvocation)
+    tool_invocation.span = mock.MagicMock()
+    tool_invocation.span.is_recording.return_value = False
+    telemetry.tool.return_value = tool_invocation
     return OpenTelemetryLangChainCallbackHandler(telemetry), telemetry
 
 
@@ -127,6 +133,27 @@ def test_create_agent_internal_nodes_are_not_agents() -> None:
     ).invoke({"messages": [("user", "hi")]}, {"callbacks": [handler]})
 
     assert _agent_names(telemetry) == ["agent"]
+
+
+def test_create_agent_with_configured_agent_name_emits_one_agent() -> None:
+    handler, telemetry = _handler()
+    create_agent(
+        FakeModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "noop", "args": {}, "id": "1"}],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        [noop],
+    ).with_config(metadata={"agent_name": "ordinary"}).invoke(
+        {"messages": [("user", "hi")]}, {"callbacks": [handler]}
+    )
+
+    assert _agent_names(telemetry) == ["ordinary"]
+    assert telemetry.tool.call_count == 1
 
 
 def test_ordinary_runnable_is_not_an_agent() -> None:

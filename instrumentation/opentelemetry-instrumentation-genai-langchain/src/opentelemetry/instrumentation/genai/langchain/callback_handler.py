@@ -116,11 +116,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     if agent_invocation_name
                     else None
                 )
-                if (
-                    has_create_agent_marker
-                    or suggested_agent_name_lower
-                    != agent_invocation_name_lower
-                ):
+                if suggested_agent_name_lower != agent_invocation_name_lower:
                     agent = self._telemetry_handler.invoke_local_agent(
                         agent_name=suggested_agent_name,
                     )
