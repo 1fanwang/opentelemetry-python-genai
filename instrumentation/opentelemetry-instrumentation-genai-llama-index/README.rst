@@ -6,8 +6,14 @@ OpenTelemetry LlamaIndex Instrumentation
 .. |pypi| image:: https://badge.fury.io/py/opentelemetry-instrumentation-genai-llama-index.svg
    :target: https://pypi.org/project/opentelemetry-instrumentation-genai-llama-index/
 
-This package contains the OpenTelemetry instrumentor scaffold for
+This package contains OpenTelemetry instrumentation for
 `LlamaIndex <https://github.com/run-llama/llama_index>`_.
+
+It emits ``invoke_agent`` spans for LlamaIndex ``FunctionAgent`` and
+``ReActAgent`` runs, and ``execute_tool`` spans when LlamaIndex executes
+function tools. Model calls
+delegated to provider SDKs are intentionally left to those SDKs' OpenTelemetry
+instrumentations.
 
 Installation
 ------------
