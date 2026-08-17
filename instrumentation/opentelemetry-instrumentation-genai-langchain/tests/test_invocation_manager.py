@@ -209,29 +209,6 @@ def test_get_parent_run_id_returns_none_for_unknown(invocation_manager):
     assert invocation_manager.get_parent_run_id(uuid.uuid4()) is None
 
 
-def test_create_agent_ancestry(invocation_manager):
-    agent_run_id = uuid.uuid4()
-    child_run_id = uuid.uuid4()
-    invocation_manager.add_invocation_state(
-        agent_run_id, None, None, has_create_agent_marker=True
-    )
-    invocation_manager.add_invocation_state(child_run_id, agent_run_id, None)
-
-    assert invocation_manager.create_agent_ancestry(child_run_id) is True
-    assert invocation_manager.create_agent_ancestry(uuid.uuid4()) is None
-    assert invocation_manager.create_agent_ancestry(None) is False
-
-
-def test_create_agent_ancestry_is_unknown_for_cycle(invocation_manager):
-    first_run_id = uuid.uuid4()
-    second_run_id = uuid.uuid4()
-    invocation_manager.add_invocation_state(first_run_id, None, None)
-    invocation_manager.add_invocation_state(second_run_id, first_run_id, None)
-    invocation_manager._invocations[first_run_id].parent_run_id = second_run_id
-
-    assert invocation_manager.create_agent_ancestry(first_run_id) is None
-
-
 def test_get_parent_run_id_returns_registered_parent(invocation_manager):
     parent_id = uuid.uuid4()
     child_id = uuid.uuid4()

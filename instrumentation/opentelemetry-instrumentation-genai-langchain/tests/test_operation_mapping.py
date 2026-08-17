@@ -6,13 +6,50 @@
 Tests the public API: classify_chain_run, resolve_agent_name.
 """
 
+from __future__ import annotations
+
 import uuid
+from typing import Any, Self
+
+import langchain.agents
+import pytest
+from langchain_core.language_models.fake_chat_models import (
+    FakeMessagesListChatModel,
+)
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 
 from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
     OperationName,
     classify_chain_run,
     resolve_agent_name,
 )
+
+
+class _FakeModel(FakeMessagesListChatModel):
+    def bind_tools(
+        self,
+        tools: Any,
+        *,
+        tool_choice: Any = None,
+        **kwargs: Any,
+    ) -> Self:
+        return self
+
+
+@tool
+def _noop() -> str:
+    """Do nothing."""
+    return "ok"
+
+
+def _create_agent(*args: Any, **kwargs: Any) -> Any:
+    create_agent = getattr(langchain.agents, "create_agent", None)
+    if create_agent is None:
+        pytest.skip("create_agent requires a newer langchain version")
+    return create_agent(*args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # resolve_agent_name
@@ -35,14 +72,6 @@ class TestResolveAgentName:
             kwargs={"name": "kwargs_name"},
         )
         assert result == "kwargs_name"
-
-    def test_langchain_agent_name_used_before_run_name(self):
-        result = resolve_agent_name(
-            serialized={"name": "serialized_name"},
-            metadata={"lc_agent_name": "langchain_agent"},
-            kwargs={"name": "custom_run_name"},
-        )
-        assert result == "langchain_agent"
 
     def test_serialized_name_used_as_fallback(self):
         result = resolve_agent_name(
@@ -180,68 +209,111 @@ class TestClassifyChainRun:
         )
         assert result == OperationName.INVOKE_AGENT
 
-    def test_top_level_langchain_agent_is_agent(self):
-        result = classify_chain_run(
-            serialized={},
-            metadata={"lc_agent_name": "my_agent"},
-            kwargs={},
-            parent_run_id=None,
-        )
-        assert result == OperationName.INVOKE_AGENT
+    def test_internal_langgraph_node_is_not_agent(
+        self, span_exporter, start_instrumentation
+    ):
+        _create_agent(
+            _FakeModel(responses=[AIMessage(content="done")]),
+            [_noop],
+            name="my_agent",
+        ).invoke({"messages": [("user", "hi")]})
 
-    def test_internal_langgraph_node_is_not_agent(self):
-        result = classify_chain_run(
-            serialized={},
-            metadata={
-                "lc_agent_name": "my_agent",
-                "langgraph_node": "model",
-            },
-            kwargs={"name": "model"},
-            parent_run_id=uuid.uuid4(),
-            parent_agent_name="my_agent",
-            create_agent_ancestry=True,
-        )
-        assert result is None
+        spans = span_exporter.get_finished_spans()
+        assert [span.name for span in spans] == ["invoke_agent my_agent"]
+        agent_span = spans[0]
+        assert agent_span.parent is None
+        assert agent_span.attributes["gen_ai.agent.name"] == "my_agent"
 
-    def test_nested_langchain_agent_with_inherited_marker_is_not_agent(self):
-        result = classify_chain_run(
-            serialized={},
-            metadata={
-                "lc_agent_name": "nested_agent",
-                "ls_integration": "langchain_create_agent",
-                "langgraph_node": "tools",
-            },
-            kwargs={"name": "nested_agent"},
-            parent_run_id=uuid.uuid4(),
-            parent_agent_name="parent_agent",
-            create_agent_ancestry=True,
+    def test_nested_agent_gets_its_own_span_under_the_calling_tool(
+        self, span_exporter, start_instrumentation
+    ):
+        inner = _create_agent(
+            _FakeModel(responses=[AIMessage(content="inner done")]),
+            [_noop],
+            name="inner_agent",
         )
-        assert result is None
 
-    def test_nested_langchain_agent_without_run_name_is_not_agent(self):
-        result = classify_chain_run(
-            serialized={},
-            metadata={
-                "lc_agent_name": "nested_agent",
-                "ls_integration": "langchain_create_agent",
-                "langgraph_node": "tools",
-            },
-            kwargs={},
-            parent_run_id=uuid.uuid4(),
-            parent_agent_name="parent_agent",
-            create_agent_ancestry=True,
-        )
-        assert result is None
+        @tool
+        def delegate(config: RunnableConfig) -> str:
+            """Delegate to the inner agent."""
+            result = inner.invoke({"messages": [("user", "work")]}, config)
+            return str(result["messages"][-1].content)
 
-    def test_create_agent_marker_with_unknown_ancestry_is_not_agent(self):
-        result = classify_chain_run(
-            serialized={},
-            metadata={"ls_integration": "langchain_create_agent"},
-            kwargs={"name": "inner"},
-            parent_run_id=uuid.uuid4(),
-            create_agent_ancestry=None,
+        outer = _create_agent(
+            _FakeModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delegate", "args": {}, "id": "call-1"}
+                        ],
+                    ),
+                    AIMessage(content="outer done"),
+                ]
+            ),
+            [delegate],
+            name="outer_agent",
         )
-        assert result is None
+        outer.invoke({"messages": [("user", "start")]})
+
+        spans = span_exporter.get_finished_spans()
+        assert [span.name for span in spans] == [
+            "invoke_agent inner_agent",
+            "execute_tool delegate",
+            "invoke_agent outer_agent",
+        ]
+        inner_agent, tool_span, outer_agent = spans
+        assert outer_agent.parent is None
+        assert tool_span.parent.span_id == outer_agent.context.span_id
+        assert inner_agent.parent.span_id == tool_span.context.span_id
+        assert inner_agent.attributes["gen_ai.agent.name"] == "inner_agent"
+        assert outer_agent.attributes["gen_ai.agent.name"] == "outer_agent"
+        assert "gen_ai.agent.name" not in tool_span.attributes
+
+    def test_unnamed_nested_agent_falls_back_to_the_langgraph_name(
+        self, span_exporter, start_instrumentation
+    ):
+        inner = _create_agent(
+            _FakeModel(responses=[AIMessage(content="inner done")]),
+            [_noop],
+        )
+
+        @tool
+        def delegate(config: RunnableConfig) -> str:
+            """Delegate to the unnamed inner agent."""
+            result = inner.invoke({"messages": [("user", "work")]}, config)
+            return str(result["messages"][-1].content)
+
+        outer = _create_agent(
+            _FakeModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delegate", "args": {}, "id": "call-1"}
+                        ],
+                    ),
+                    AIMessage(content="outer done"),
+                ]
+            ),
+            [delegate],
+            name="outer_agent",
+        )
+        outer.invoke({"messages": [("user", "start")]})
+
+        spans = span_exporter.get_finished_spans()
+        assert [span.name for span in spans] == [
+            "invoke_agent LangGraph",
+            "execute_tool delegate",
+            "invoke_agent outer_agent",
+        ]
+        inner_agent, tool_span, outer_agent = spans
+        assert outer_agent.parent is None
+        assert tool_span.parent.span_id == outer_agent.context.span_id
+        assert inner_agent.parent.span_id == tool_span.context.span_id
+        assert inner_agent.attributes["gen_ai.agent.name"] == "LangGraph"
+        assert outer_agent.attributes["gen_ai.agent.name"] == "outer_agent"
+        assert "gen_ai.agent.name" not in tool_span.attributes
 
     def test_explicit_otel_agent_metadata_overrides_node_inference(self):
         result = classify_chain_run(

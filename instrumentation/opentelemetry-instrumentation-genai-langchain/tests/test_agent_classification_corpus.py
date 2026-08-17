@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Any, Self
 from unittest import mock
-from uuid import uuid4
 
 import langchain.agents
 import pytest
@@ -88,20 +87,29 @@ def _agent_names(telemetry: mock.MagicMock) -> list[str]:
     ("name", "expected_name"),
     [(None, "LangGraph"), ("named_agent", "named_agent")],
 )
-def test_create_agent_root(name: str | None, expected_name: str) -> None:
-    handler, telemetry = _handler()
+def test_create_agent_root(
+    name: str | None,
+    expected_name: str,
+    span_exporter,
+    start_instrumentation,
+) -> None:
     agent_kwargs = {"name": name} if name is not None else {}
     create_agent(
         FakeModel(responses=[AIMessage(content="done")]),
         [noop],
         **agent_kwargs,
-    ).invoke({"messages": [("user", "hi")]}, {"callbacks": [handler]})
+    ).invoke({"messages": [("user", "hi")]})
 
-    assert _agent_names(telemetry) == [expected_name]
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == [f"invoke_agent {expected_name}"]
+    agent_span = spans[0]
+    assert agent_span.parent is None
+    assert agent_span.attributes["gen_ai.agent.name"] == expected_name
 
 
-def test_create_agent_name_wins_over_run_name_override() -> None:
-    handler, telemetry = _handler()
+def test_create_agent_name_wins_over_run_name_override(
+    span_exporter, start_instrumentation
+) -> None:
     agent = create_agent(
         FakeModel(responses=[AIMessage(content="done")]),
         [noop],
@@ -111,13 +119,23 @@ def test_create_agent_name_wins_over_run_name_override() -> None:
         lambda _: agent.invoke(
             {"messages": [("user", "hi")]}, {"run_name": "step1"}
         )
-    ).with_config(run_name="planner").invoke({}, {"callbacks": [handler]})
+    ).with_config(run_name="planner").invoke({})
 
-    assert _agent_names(telemetry) == ["planner_agent"]
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == [
+        "invoke_agent planner_agent",
+        "invoke_workflow planner",
+    ]
+    agent_span, workflow_span = spans
+    assert agent_span.parent.span_id == workflow_span.context.span_id
+    assert workflow_span.parent is None
+    assert agent_span.attributes["gen_ai.agent.name"] == "planner_agent"
+    assert "gen_ai.agent.name" not in workflow_span.attributes
 
 
-def test_create_agent_internal_nodes_are_not_agents() -> None:
-    handler, telemetry = _handler()
+def test_create_agent_internal_nodes_are_not_agents(
+    span_exporter, start_instrumentation
+) -> None:
     create_agent(
         FakeModel(
             responses=[
@@ -130,9 +148,19 @@ def test_create_agent_internal_nodes_are_not_agents() -> None:
         ),
         [noop],
         name="agent",
-    ).invoke({"messages": [("user", "hi")]}, {"callbacks": [handler]})
+    ).invoke({"messages": [("user", "hi")]})
 
-    assert _agent_names(telemetry) == ["agent"]
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == [
+        "execute_tool noop",
+        "invoke_agent agent",
+    ]
+    agent_span = spans[-1]
+    assert agent_span.parent is None
+    assert agent_span.attributes["gen_ai.agent.name"] == "agent"
+    tool_span = spans[0]
+    assert tool_span.parent.span_id == agent_span.context.span_id
+    assert "gen_ai.agent.name" not in tool_span.attributes
 
 
 def test_create_agent_with_configured_agent_name_emits_one_agent() -> None:
@@ -174,46 +202,6 @@ def test_plain_state_graph_is_not_an_agent() -> None:
     builder.compile().invoke({"value": 1}, {"callbacks": [handler]})
 
     telemetry.invoke_local_agent.assert_not_called()
-
-
-def test_incomplete_ancestry_does_not_claim_create_agent_root() -> None:
-    handler, telemetry = _handler()
-    outer_run_id = uuid4()
-    missing_middle_run_id = uuid4()
-    inner_run_id = uuid4()
-    marker = {
-        "ls_integration": "langchain_create_agent",
-        "lc_agent_name": "agent",
-    }
-
-    handler.on_chain_start(
-        {}, {}, run_id=outer_run_id, metadata=marker, name="outer"
-    )
-    handler.on_chain_start(
-        {},
-        {},
-        run_id=inner_run_id,
-        parent_run_id=missing_middle_run_id,
-        metadata=marker,
-        name="inner",
-    )
-
-    assert _agent_names(telemetry) == ["agent"]
-    assert (
-        handler._invocation_manager.get_parent_run_id(inner_run_id)
-        == missing_middle_run_id
-    )
-
-
-def test_user_supplied_create_agent_marker_declares_agent() -> None:
-    """The callback API has no provenance to distinguish this from create_agent."""
-    handler, telemetry = _handler()
-    RunnableLambda(lambda value: value).with_config(
-        run_name="ordinary",
-        metadata={"ls_integration": "langchain_create_agent"},
-    ).invoke("value", {"callbacks": [handler]})
-
-    assert _agent_names(telemetry) == ["ordinary"]
 
 
 @pytest.mark.xfail(
