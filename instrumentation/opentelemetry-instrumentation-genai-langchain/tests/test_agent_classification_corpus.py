@@ -5,26 +5,18 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any, Self
 from unittest import mock
 
 import langchain.agents
 import pytest
-
-create_agent = getattr(langchain.agents, "create_agent", None)
-if create_agent is None:
-    pytest.skip(
-        "create_agent requires a newer langchain version",
-        allow_module_level=True,
-    )
-
 from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
-from langgraph.graph import END, START, StateGraph
 
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
@@ -34,6 +26,18 @@ from opentelemetry.util.genai.invocation import (
     ToolInvocation,
     WorkflowInvocation,
 )
+
+create_agent = getattr(langchain.agents, "create_agent", None)
+if create_agent is None:
+    pytest.skip(
+        "create_agent requires a newer langchain version",
+        allow_module_level=True,
+    )
+
+langgraph_graph = import_module("langgraph.graph")
+END = langgraph_graph.END
+START = langgraph_graph.START
+StateGraph = langgraph_graph.StateGraph
 
 
 class FakeModel(FakeMessagesListChatModel):

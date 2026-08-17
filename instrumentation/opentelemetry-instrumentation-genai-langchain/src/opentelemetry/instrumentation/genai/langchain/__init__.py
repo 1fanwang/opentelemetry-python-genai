@@ -124,7 +124,10 @@ class LangChainInstrumentor(BaseInstrumentor):
         else:
             for method in ("stream", "astream"):
                 unwrap(langgraph.pregel.Pregel, method)
-            for symbol in ("create_react_agent", "create_tool_calling_executor"):
+            for symbol in (
+                "create_react_agent",
+                "create_tool_calling_executor",
+            ):
                 unwrap(langgraph.prebuilt, symbol)
         # Clear the TelemetryHandler singleton so the next instrument() uses
         # the provided tracer_provider/meter_provider/logger_provider instead

@@ -119,7 +119,8 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 # already opened the layer and this run would duplicate it.
                 if (
                     suggested_agent_name == declared_agent_name
-                    or suggested_agent_name_lower != agent_invocation_name_lower
+                    or suggested_agent_name_lower
+                    != agent_invocation_name_lower
                 ):
                     agent = self._telemetry_handler.invoke_local_agent(
                         agent_name=suggested_agent_name,

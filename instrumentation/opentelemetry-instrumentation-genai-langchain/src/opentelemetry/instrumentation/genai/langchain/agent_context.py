@@ -23,7 +23,6 @@ from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
     create_agent_graph_name,
 )
 
-
 _AGENT_NAME_ATTR = "_otel_genai_agent_name"
 
 
