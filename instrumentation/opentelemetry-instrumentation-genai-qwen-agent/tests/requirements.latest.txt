@@ -44,6 +44,7 @@ qwen-agent==0.0.34
 numpy
 soundfile==0.13.1
 python-dateutil==2.9.0.post0
+tqdm
 wrapt==2.2.2
 # test with the latest version of opentelemetry-api, sdk, semantic conventions, and instrumentation
 
