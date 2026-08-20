@@ -31,7 +31,7 @@ so no edit is needed there.
 ## 2. Lower bounds
 
 The `oldest` factor sets `UV_RESOLUTION=lowest-direct`, so lower bounds come from
-`pyproject.toml` and `oldest-deps-check` already enforces that invariant. Do not re-report what
+`pyproject.toml` and `deps-check` already enforces that invariant. Do not re-report what
 it catches.
 
 What is left to review is whether a changed bound is justified: a raised floor needs a reason in

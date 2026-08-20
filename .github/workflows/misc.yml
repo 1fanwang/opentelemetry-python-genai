@@ -159,8 +159,8 @@ jobs:
       - name: Run typecheck
         run: uvx --with tox-uv tox -e typecheck
 
-  oldest-deps-check:
-    name: oldest-deps-check
+  deps-check:
+    name: deps-check
     runs-on: cncf-ubuntu-2-8-x86
     timeout-minutes: 10
     steps:
@@ -175,8 +175,8 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
-      - name: Run oldest dependency check
-        run: uv run --with packaging scripts/check_oldest_deps.py
+      - name: Run dependency check
+        run: uv run --with packaging scripts/check_deps.py
 
   license-header-check:
     name: license-header-check
@@ -215,4 +215,5 @@ jobs:
 
       - name: Check versions
         run: uvx --with tox-uv tox -e check-versions
+
 
