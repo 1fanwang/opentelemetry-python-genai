@@ -8,12 +8,20 @@ from unittest.mock import patch
 
 import pytest
 from llama_index.core.agent.workflow import FunctionAgent, ReActAgent
-from llama_index.core.base.llms.types import ChatResponse, ToolCallBlock
+from llama_index.core.base.llms.types import (
+    ChatResponse,
+    TextBlock,
+    ToolCallBlock,
+)
 from llama_index.core.llms import ChatMessage, MockFunctionCallingLLM
 from llama_index.core.tools import FunctionTool
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from openai import RateLimitError
 
+from opentelemetry.instrumentation.genai.llama_index._handler import (
+    _input_message,
+    _output_message,
+)
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
@@ -22,6 +30,7 @@ from opentelemetry.semconv.attributes import (
     error_attributes as ErrorAttributes,
 )
 from opentelemetry.trace import SpanKind, StatusCode
+from opentelemetry.util.genai.types import Text, ToolCallRequest
 
 
 def _spans_named(span_exporter, name: str):
@@ -32,6 +41,55 @@ def _assert_error_type(span: ReadableSpan, expected: str) -> None:
     error_type = span.attributes[ErrorAttributes.ERROR_TYPE]
     assert isinstance(error_type, str)
     assert error_type.rsplit(".", 1)[-1] == expected
+
+
+def test_input_message_preserves_tool_call_blocks() -> None:
+    message = ChatMessage(
+        role="assistant",
+        blocks=[
+            TextBlock(text="I will check the weather."),
+            ToolCallBlock(
+                tool_call_id="weather-call",
+                tool_name="weather",
+                tool_kwargs={"city": "Paris"},
+            ),
+        ],
+    )
+
+    converted = _input_message(message)
+
+    assert converted.parts == [
+        Text(content="I will check the weather."),
+        ToolCallRequest(
+            id="weather-call",
+            name="weather",
+            arguments={"city": "Paris"},
+        ),
+    ]
+
+
+def test_output_message_preserves_tool_call_blocks() -> None:
+    message = ChatMessage(
+        role="assistant",
+        blocks=[
+            ToolCallBlock(
+                tool_call_id="weather-call",
+                tool_name="weather",
+                tool_kwargs={"city": "Paris"},
+            )
+        ],
+    )
+
+    converted = _output_message(message)
+
+    assert converted.parts == [
+        ToolCallRequest(
+            id="weather-call",
+            name="weather",
+            arguments={"city": "Paris"},
+        )
+    ]
+    assert converted.finish_reason == "tool_calls"
 
 
 @pytest.mark.asyncio

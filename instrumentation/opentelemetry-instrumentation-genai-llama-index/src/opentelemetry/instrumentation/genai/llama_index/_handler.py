@@ -12,7 +12,11 @@ from llama_index.core.agent.workflow.workflow_events import (
     ToolCall,
     ToolCallResult,
 )
-from llama_index.core.base.llms.types import ChatMessage, TextBlock
+from llama_index.core.base.llms.types import (
+    ChatMessage,
+    TextBlock,
+    ToolCallBlock,
+)
 from llama_index.core.instrumentation.span import BaseSpan
 from llama_index.core.instrumentation.span_handlers import BaseSpanHandler
 from llama_index.core.tools import FunctionTool, ToolOutput
@@ -30,6 +34,7 @@ from opentelemetry.util.genai.types import (
     MessagePart,
     OutputMessage,
     Text,
+    ToolCallRequest,
     ToolDefinition,
 )
 
@@ -39,11 +44,19 @@ def _method_name(span_id: str) -> str:
 
 
 def _chat_message_parts(message: ChatMessage) -> list[MessagePart]:
-    return [
-        Text(content=block.text)
-        for block in message.blocks
-        if isinstance(block, TextBlock) and block.text
-    ]
+    parts: list[MessagePart] = []
+    for block in message.blocks:
+        if isinstance(block, TextBlock) and block.text:
+            parts.append(Text(content=block.text))
+        elif isinstance(block, ToolCallBlock):
+            parts.append(
+                ToolCallRequest(
+                    arguments=block.tool_kwargs,
+                    name=block.tool_name,
+                    id=block.tool_call_id,
+                )
+            )
+    return parts
 
 
 def _input_message(message: ChatMessage) -> InputMessage:
@@ -57,7 +70,13 @@ def _output_message(message: ChatMessage) -> OutputMessage:
     return OutputMessage(
         role=message.role.value,
         parts=_chat_message_parts(message),
-        finish_reason="stop",
+        finish_reason=(
+            "tool_calls"
+            if any(
+                isinstance(block, ToolCallBlock) for block in message.blocks
+            )
+            else "stop"
+        ),
     )
 
 
