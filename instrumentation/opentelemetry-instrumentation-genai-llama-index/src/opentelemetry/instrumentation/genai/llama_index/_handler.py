@@ -209,6 +209,7 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
             tool_invocation = self._handler.tool(
                 tool_call.tool_name,
                 tool_call_id=tool_call.tool_id,
+                tool_type="function",
             )
             if tool_invocation.should_capture_content_on_span:
                 tool_invocation.arguments = cast(

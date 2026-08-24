@@ -522,6 +522,7 @@ async def test_async_tool_span_nested_under_agent(
     tool_attrs = dict(tool_span.attributes or {})
     assert tool_attrs[GenAIAttributes.GEN_AI_TOOL_CALL_ID] == "weather-call"
     assert isinstance(tool_attrs[GenAIAttributes.GEN_AI_TOOL_CALL_ID], str)
+    assert tool_attrs[GenAIAttributes.GEN_AI_TOOL_TYPE] == "function"
 
 
 def test_tool_content_is_opt_in(span_exporter, instrument_llama_index) -> None:
