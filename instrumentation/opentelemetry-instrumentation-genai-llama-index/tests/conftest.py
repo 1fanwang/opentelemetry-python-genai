@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from llama_index.llms.openai import OpenAI
 
@@ -22,12 +24,19 @@ pytest_plugins = [
 
 @pytest.fixture(autouse=True)
 def environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "test_openai_api_key")
+    if not os.getenv("OPENAI_API_KEY"):
+        monkeypatch.setenv("OPENAI_API_KEY", "test_openai_api_key")
 
 
 @pytest.fixture
 def openai_llm() -> OpenAI:
     return OpenAI(model="gpt-4o-mini", temperature=0.1)
+
+
+@pytest.fixture
+def openai_llm_without_retries() -> OpenAI:
+    # The default three retries would replay an error cassette four times.
+    return OpenAI(model="gpt-4o-mini", temperature=0.1, max_retries=0)
 
 
 @pytest.fixture(scope="module")

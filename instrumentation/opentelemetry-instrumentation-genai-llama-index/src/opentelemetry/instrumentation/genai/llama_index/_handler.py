@@ -234,14 +234,23 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
             return None
         if isinstance(span._invocation, AgentInvocation):
             _set_agent_output(span._invocation, result)
-        elif (
-            isinstance(span._invocation, ToolInvocation)
-            and span._invocation.should_capture_content_on_span
-        ):
+        elif isinstance(span._invocation, ToolInvocation):
+            tool_output: ToolOutput | None = None
             if isinstance(result, ToolCallResult):
-                span._invocation.tool_result = result.tool_output.raw_output
+                tool_output = result.tool_output
             elif isinstance(result, ToolOutput):
-                span._invocation.tool_result = result.raw_output
+                tool_output = result
+            if tool_output is not None:
+                if span._invocation.should_capture_content_on_span:
+                    span._invocation.tool_result = tool_output.raw_output
+                # LlamaIndex converts tool exceptions into ToolOutput values so
+                # the agent can recover. Mark the tool invocation as failed here
+                # because the exception does not reach prepare_to_drop_span().
+                if tool_output.is_error and isinstance(
+                    tool_output.exception, BaseException
+                ):
+                    span._invocation.fail(tool_output.exception)
+                    return span
         span._invocation.stop()
         return span
 
