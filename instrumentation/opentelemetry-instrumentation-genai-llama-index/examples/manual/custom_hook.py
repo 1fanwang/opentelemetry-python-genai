@@ -8,6 +8,7 @@ from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.llms.openai import OpenAI
 
 from opentelemetry import _logs, metrics, trace
+from opentelemetry._logs import LogRecord
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
     OTLPLogExporter,
 )
@@ -26,6 +27,32 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import Span
+from opentelemetry.util.genai.completion_hook import CompletionHook
+from opentelemetry.util.genai.types import (
+    InputMessage,
+    MessagePart,
+    OutputMessage,
+    ToolDefinition,
+)
+
+
+class PrintCompletionHook(CompletionHook):
+    """Print captured inputs and outputs instead of forwarding them externally."""
+
+    def on_completion(
+        self,
+        *,
+        inputs: list[InputMessage],
+        outputs: list[OutputMessage],
+        system_instruction: list[MessagePart],
+        tool_definitions: list[ToolDefinition] | None = None,
+        span: Span | None = None,
+        log_record: LogRecord | None = None,
+    ) -> None:
+        print(f"[hook] inputs: {inputs}")
+        print(f"[hook] outputs: {outputs}")
+
 
 trace.set_tracer_provider(TracerProvider())
 trace.get_tracer_provider().add_span_processor(
@@ -43,7 +70,7 @@ metrics.set_meter_provider(
     )
 )
 
-LlamaIndexInstrumentor().instrument()
+LlamaIndexInstrumentor().instrument(completion_hook=PrintCompletionHook())
 
 
 async def main() -> None:

@@ -4,23 +4,38 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import patch
 
 import pytest
-from llama_index.core.agent.workflow import FunctionAgent, ReActAgent
+from llama_index.core.agent.workflow import (
+    AgentWorkflow,
+    FunctionAgent,
+    ReActAgent,
+)
 from llama_index.core.base.llms.types import (
+    AudioBlock,
     ChatResponse,
+    DocumentBlock,
+    ImageBlock,
     TextBlock,
+    ThinkingBlock,
     ToolCallBlock,
 )
 from llama_index.core.llms import ChatMessage, MockFunctionCallingLLM
-from llama_index.core.tools import FunctionTool
+from llama_index.core.tools import (
+    BaseTool,
+    FunctionTool,
+    ToolMetadata,
+    ToolOutput,
+)
 from llama_index.core.workflow.errors import WorkflowRuntimeError
 from openai import RateLimitError
 
 from opentelemetry.instrumentation.genai.llama_index._handler import (
     _input_message,
     _output_message,
+    _tool_definition,
 )
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.semconv._incubating.attributes import (
@@ -30,7 +45,14 @@ from opentelemetry.semconv.attributes import (
     error_attributes as ErrorAttributes,
 )
 from opentelemetry.trace import SpanKind, StatusCode
-from opentelemetry.util.genai.types import Text, ToolCallRequest
+from opentelemetry.util.genai.types import (
+    Blob,
+    GenericToolDefinition,
+    Reasoning,
+    Text,
+    ToolCallRequest,
+    Uri,
+)
 
 
 def _spans_named(span_exporter, name: str):
@@ -92,6 +114,69 @@ def test_output_message_preserves_tool_call_blocks() -> None:
     assert converted.finish_reason == "tool_calls"
 
 
+def test_input_message_preserves_multimodal_blocks() -> None:
+    image = b"\x89PNG\r\n\x1a\n"
+    message = ChatMessage(
+        role="user",
+        blocks=[
+            ImageBlock(image=image, image_mimetype="image/png"),
+            AudioBlock(url="https://example.com/audio.mp3", format="mp3"),
+            DocumentBlock(
+                url="https://example.com/document.pdf",
+                document_mimetype="application/pdf",
+            ),
+            ThinkingBlock(content="Consider the available evidence."),
+        ],
+    )
+
+    converted = _input_message(message)
+
+    assert converted.parts == [
+        Blob(content=image, mime_type="image/png", modality="image"),
+        Uri(
+            uri="https://example.com/audio.mp3",
+            mime_type="audio/mpeg",
+            modality="audio",
+        ),
+        Uri(
+            uri="https://example.com/document.pdf",
+            mime_type="application/pdf",
+            modality="document",
+        ),
+        Reasoning(content="Consider the available evidence."),
+    ]
+
+
+def test_tool_definition_skips_invalid_parameter_schema() -> None:
+    tool = FunctionTool.from_defaults(lambda value: value, name="echo")
+
+    with patch.object(
+        ToolMetadata,
+        "get_parameters_dict",
+        side_effect=ValueError("invalid schema"),
+    ):
+        assert _tool_definition(tool) is None
+
+
+def test_generic_tool_definition_is_preserved() -> None:
+    class SearchTool(BaseTool):
+        @property
+        def metadata(self) -> ToolMetadata:
+            return ToolMetadata(name="search", description="Search documents.")
+
+        def __call__(self, input: Any) -> ToolOutput:
+            return ToolOutput(
+                tool_name="search",
+                content=str(input),
+                raw_input={"input": input},
+                raw_output=input,
+            )
+
+    assert _tool_definition(SearchTool()) == GenericToolDefinition(
+        name="search", type="SearchTool"
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_run_span(
     span_exporter, instrument_llama_index_with_content
@@ -132,6 +217,113 @@ async def test_agent_run_span(
         {"content": "Be concise.", "type": "text"}
     ]
     assert GenAIAttributes.GEN_AI_PROVIDER_NAME not in attrs
+
+
+@pytest.mark.asyncio
+async def test_agent_run_captures_chat_message_input(
+    span_exporter, instrument_llama_index_with_content
+) -> None:
+    agent = FunctionAgent(
+        name="chat-message-agent",
+        llm=MockFunctionCallingLLM(is_chat_model=True),
+        streaming=False,
+    )
+
+    await agent.run(
+        user_msg=ChatMessage(
+            role="user", blocks=[TextBlock(text="Hello from a ChatMessage")]
+        )
+    )
+
+    span = _spans_named(span_exporter, "invoke_agent chat-message-agent")[0]
+    assert json.loads(
+        span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    ) == [
+        {
+            "parts": [{"content": "Hello from a ChatMessage", "type": "text"}],
+            "role": "user",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_span_skips_unnamed_tool_definition(
+    span_exporter, instrument_llama_index_with_content
+) -> None:
+    def echo(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    unnamed_tool = FunctionTool(
+        fn=lambda: None,
+        metadata=ToolMetadata(
+            description="A tool without a name.",
+            name=None,
+            fn_schema=None,
+        ),
+    )
+    agent = FunctionAgent(
+        name="agent-with-unnamed-tool",
+        llm=MockFunctionCallingLLM(is_chat_model=True),
+        tools=[FunctionTool.from_defaults(echo), unnamed_tool],
+        streaming=False,
+    )
+
+    result = await agent.run(user_msg="Hello!")
+    assert result.response.content
+
+    span = _spans_named(span_exporter, "invoke_agent agent-with-unnamed-tool")[
+        0
+    ]
+    definitions = json.loads(
+        span.attributes[GenAIAttributes.GEN_AI_TOOL_DEFINITIONS]
+    )
+    assert len(definitions) == 1
+    assert definitions[0]["name"] == "echo"
+
+
+@pytest.mark.asyncio
+async def test_agent_metadata_error_does_not_leak_span_context(
+    span_exporter, instrument_llama_index
+) -> None:
+    def echo(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    def response_generator(messages, **kwargs):
+        if any(message.role.value == "tool" for message in messages):
+            return ChatMessage(role="assistant", content="done")
+        return ChatMessage(
+            role="assistant",
+            blocks=[
+                ToolCallBlock(
+                    tool_call_id="echo-call",
+                    tool_name="echo",
+                    tool_kwargs={"value": "hello"},
+                )
+            ],
+        )
+
+    agent = FunctionAgent(
+        name="metadata-error-agent",
+        llm=MockFunctionCallingLLM(
+            is_chat_model=True,
+            response_generator=response_generator,
+        ),
+        tools=[FunctionTool.from_defaults(echo)],
+        streaming=False,
+    )
+
+    with patch(
+        "opentelemetry.instrumentation.genai.llama_index._handler._tool_definitions",
+        side_effect=ValueError("metadata extraction failed"),
+    ):
+        result = await agent.run(user_msg="Call echo")
+    assert result.response.content == "done"
+
+    assert not _spans_named(span_exporter, "invoke_agent metadata-error-agent")
+    tool_span = _spans_named(span_exporter, "execute_tool echo")[0]
+    assert tool_span.parent is None
 
 
 @pytest.mark.asyncio
@@ -453,6 +645,82 @@ async def test_agent_recovers_from_tool_error(
     assert tool_span.parent.span_id == agent_span.context.span_id
 
 
+@pytest.mark.asyncio
+async def test_unknown_tool_output_marks_tool_span_as_error(
+    span_exporter, instrument_llama_index
+) -> None:
+    def response_generator(messages, **kwargs):
+        if any(message.role.value == "tool" for message in messages):
+            return ChatMessage(role="assistant", content="done")
+        return ChatMessage(
+            role="assistant",
+            blocks=[
+                ToolCallBlock(
+                    tool_call_id="unknown-tool-call",
+                    tool_name="nonexistent",
+                    tool_kwargs={},
+                )
+            ],
+        )
+
+    agent = FunctionAgent(
+        name="unknown-tool-agent",
+        llm=MockFunctionCallingLLM(
+            is_chat_model=True,
+            response_generator=response_generator,
+        ),
+        streaming=False,
+    )
+
+    result = await agent.run(user_msg="Call a tool")
+    assert result.response.content == "done"
+
+    tool_span = _spans_named(span_exporter, "execute_tool nonexistent")[0]
+    assert tool_span.status.status_code == StatusCode.ERROR
+    assert tool_span.attributes[ErrorAttributes.ERROR_TYPE] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_agent_workflow_suppresses_orphan_tool_spans(
+    span_exporter, instrument_llama_index
+) -> None:
+    def echo(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    def response_generator(messages, **kwargs):
+        if any(message.role.value == "tool" for message in messages):
+            return ChatMessage(role="assistant", content="done")
+        return ChatMessage(
+            role="assistant",
+            blocks=[
+                ToolCallBlock(
+                    tool_call_id="workflow-tool-call",
+                    tool_name="echo",
+                    tool_kwargs={"value": "hello"},
+                )
+            ],
+        )
+
+    agent = FunctionAgent(
+        name="workflow-agent",
+        llm=MockFunctionCallingLLM(
+            is_chat_model=True,
+            response_generator=response_generator,
+        ),
+        tools=[FunctionTool.from_defaults(echo)],
+        streaming=False,
+    )
+    workflow = AgentWorkflow(agents=[agent])
+
+    result = await workflow.run(user_msg="Call echo")
+    assert result.response.content == "done"
+    assert not _spans_named(span_exporter, "execute_tool echo")
+
+    FunctionTool.from_defaults(echo)(value="after workflow")
+    assert len(_spans_named(span_exporter, "execute_tool echo")) == 1
+
+
 def test_sync_tool_span(
     span_exporter, instrument_llama_index_with_content
 ) -> None:
@@ -461,7 +729,7 @@ def test_sync_tool_span(
         return value * 2
 
     tool = FunctionTool.from_defaults(multiply)
-    result = tool(value=4)
+    result = tool(4)
     assert result.raw_output == 8
 
     spans = _spans_named(span_exporter, "execute_tool multiply")

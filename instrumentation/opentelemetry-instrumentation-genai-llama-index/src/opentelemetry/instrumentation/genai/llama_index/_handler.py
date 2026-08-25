@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import inspect
+from base64 import b64decode
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar, Token
+from mimetypes import guess_type
 from typing import Any, cast
 
 from llama_index.core.agent.workflow.base_agent import BaseWorkflowAgent
@@ -13,13 +16,17 @@ from llama_index.core.agent.workflow.workflow_events import (
     ToolCallResult,
 )
 from llama_index.core.base.llms.types import (
+    AudioBlock,
     ChatMessage,
+    DocumentBlock,
+    ImageBlock,
     TextBlock,
+    ThinkingBlock,
     ToolCallBlock,
 )
 from llama_index.core.instrumentation.span import BaseSpan
 from llama_index.core.instrumentation.span_handlers import BaseSpanHandler
-from llama_index.core.tools import FunctionTool, ToolOutput
+from llama_index.core.tools import BaseTool, FunctionTool, ToolOutput
 from pydantic import PrivateAttr
 
 from opentelemetry.util.genai.handler import TelemetryHandler
@@ -29,13 +36,21 @@ from opentelemetry.util.genai.invocation import (
     ToolInvocation,
 )
 from opentelemetry.util.genai.types import (
+    Blob,
     FunctionToolDefinition,
+    GenericToolDefinition,
     InputMessage,
     MessagePart,
     OutputMessage,
+    Reasoning,
     Text,
     ToolCallRequest,
     ToolDefinition,
+    Uri,
+)
+
+_SUPPRESS_TOOL_SPANS: ContextVar[bool] = ContextVar(
+    "llama_index_suppress_tool_spans", default=False
 )
 
 
@@ -56,7 +71,73 @@ def _chat_message_parts(message: ChatMessage) -> list[MessagePart]:
                     id=block.tool_call_id,
                 )
             )
+        elif isinstance(block, ThinkingBlock) and block.content:
+            parts.append(Reasoning(content=block.content))
+        elif isinstance(block, ImageBlock):
+            part = _media_part(
+                data=block.image,
+                path=block.path,
+                url=block.url,
+                mime_type=block.image_mimetype,
+                modality="image",
+            )
+            if part is not None:
+                parts.append(part)
+        elif isinstance(block, AudioBlock):
+            part = _media_part(
+                data=block.audio,
+                path=block.path,
+                url=block.url,
+                mime_type=_audio_mime_type(block.format),
+                modality="audio",
+            )
+            if part is not None:
+                parts.append(part)
+        elif isinstance(block, DocumentBlock):
+            part = _media_part(
+                data=block.data,
+                path=block.path,
+                url=block.url,
+                mime_type=block.document_mimetype,
+                modality="document",
+            )
+            if part is not None:
+                parts.append(part)
     return parts
+
+
+def _media_part(
+    *,
+    data: object,
+    path: object,
+    url: object,
+    mime_type: str | None,
+    modality: str,
+) -> MessagePart | None:
+    if isinstance(data, bytes):
+        # LlamaIndex normalizes inline media to base64 bytes during validation.
+        try:
+            return Blob(
+                content=b64decode(data, validate=True),
+                mime_type=mime_type,
+                modality=modality,
+            )
+        except ValueError:
+            pass
+    reference = url or path
+    if reference is not None:
+        return Uri(
+            uri=str(reference),
+            mime_type=mime_type,
+            modality=modality,
+        )
+    return None
+
+
+def _audio_mime_type(format_: str | None) -> str | None:
+    if not format_ or "/" in format_:
+        return format_
+    return guess_type(f"file.{format_}")[0] or f"audio/{format_}"
 
 
 def _input_message(message: ChatMessage) -> InputMessage:
@@ -97,7 +178,9 @@ def _agent_input(bound_args: inspect.BoundArguments) -> list[InputMessage]:
         if isinstance(message, ChatMessage)
     ]
     user_message = start_event.get("user_msg", default=None)
-    if isinstance(user_message, str) and user_message:
+    if isinstance(user_message, ChatMessage):
+        messages.append(_input_message(user_message))
+    elif isinstance(user_message, str) and user_message:
         messages.append(
             InputMessage(role="user", parts=[Text(content=user_message)])
         )
@@ -113,15 +196,28 @@ def _request_model(agent: BaseWorkflowAgent) -> str | None:
 
 
 def _tool_definition(candidate: object) -> ToolDefinition | None:
-    if not isinstance(candidate, FunctionTool):
+    if not isinstance(candidate, BaseTool):
         return None
-    metadata = candidate.metadata
-    parameters = cast(
-        dict[str, Any], cast(Any, metadata).get_parameters_dict()
-    )
+    # Tool metadata may be incomplete even when the agent can otherwise run.
+    try:
+        metadata = candidate.metadata
+        name = metadata.name
+        if not name:
+            return None
+        description = metadata.description or None
+    except Exception:
+        return None
+    if not isinstance(candidate, FunctionTool):
+        return GenericToolDefinition(name=name, type=type(candidate).__name__)
+    try:
+        parameters = cast(
+            dict[str, Any], cast(Any, metadata).get_parameters_dict()
+        )
+    except Exception:
+        return None
     return FunctionToolDefinition(
-        name=metadata.get_name(),
-        description=metadata.description or "",
+        name=name,
+        description=description,
         type="function",
         parameters=parameters,
     )
@@ -143,29 +239,55 @@ def _set_agent_output(invocation: AgentInvocation, result: Any) -> None:
         invocation.output_messages = [_output_message(response)]
 
 
-def _tool_arguments(bound_args: inspect.BoundArguments) -> dict[str, Any]:
-    arguments: dict[str, Any] = {}
+def _tool_arguments(
+    tool: FunctionTool, bound_args: inspect.BoundArguments
+) -> dict[str, Any]:
     positional = bound_args.arguments.get("args")
-    if isinstance(positional, Sequence):
-        arguments["args"] = list(cast(Sequence[Any], positional))
+    args = (
+        tuple(cast(Sequence[Any], positional))
+        if isinstance(positional, Sequence)
+        else ()
+    )
     keyword = bound_args.arguments.get("kwargs")
+    kwargs: dict[str, Any] = {}
     if isinstance(keyword, Mapping):
-        arguments.update(cast(Mapping[str, Any], keyword))
+        kwargs.update(cast(Mapping[str, Any], keyword))
+    try:
+        arguments = dict(
+            inspect.signature(tool.real_fn)
+            .bind_partial(*args, **kwargs)
+            .arguments
+        )
+    except (TypeError, ValueError):
+        arguments = {"args": list(args), **kwargs}
+    if tool.ctx_param_name:
+        arguments.pop(tool.ctx_param_name, None)
     return arguments
 
 
 class _LlamaIndexSpan(BaseSpan):
-    _invocation: GenAIInvocation = PrivateAttr()
+    _invocation: GenAIInvocation | None = PrivateAttr()
+    _suppression_token: Token[bool] | None = PrivateAttr()
 
     def __init__(
         self,
         *,
         id_: str,
         parent_id: str | None,
-        invocation: GenAIInvocation,
+        invocation: GenAIInvocation | None,
+        suppression_token: Token[bool] | None = None,
     ) -> None:
         super().__init__(id_=id_, parent_id=parent_id)
         self._invocation = invocation
+        self._suppression_token = suppression_token
+
+    def stop_suppression(self) -> None:
+        if self._suppression_token is not None:
+            try:
+                _SUPPRESS_TOOL_SPANS.reset(self._suppression_token)
+            except ValueError:
+                pass
+            self._suppression_token = None
 
 
 class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
@@ -187,22 +309,33 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
         **kwargs: Any,
     ) -> _LlamaIndexSpan | None:
         method_name = _method_name(id_)
-        invocation: GenAIInvocation
+        invocation: GenAIInvocation | None
+        suppression_token: Token[bool] | None = None
 
         if isinstance(instance, BaseWorkflowAgent) and method_name == "run":
             agent_name = instance.name or type(instance).__name__
+            request_model = _request_model(instance)
+            agent_description = instance.description
+            input_messages = _agent_input(bound_args)
+            tool_definitions = _tool_definitions(instance)
+            system_prompt = instance.system_prompt
+            system_instruction: list[MessagePart] = (
+                [Text(content=system_prompt)] if system_prompt else []
+            )
             agent_invocation = self._handler.invoke_local_agent(
-                request_model=_request_model(instance),
+                request_model=request_model,
                 agent_name=agent_name,
             )
-            agent_invocation.agent_description = instance.description
-            agent_invocation.input_messages = _agent_input(bound_args)
-            agent_invocation.tool_definitions = _tool_definitions(instance)
-            if instance.system_prompt:
-                agent_invocation.system_instruction = [
-                    Text(content=instance.system_prompt)
-                ]
+            agent_invocation.agent_description = agent_description
+            agent_invocation.input_messages = input_messages
+            agent_invocation.tool_definitions = tool_definitions
+            agent_invocation.system_instruction = system_instruction
             invocation = agent_invocation
+        elif id_.partition("-")[0] == "AgentWorkflow.call_tool":
+            # Retain a non-recording parent so nested FunctionTool spans are also
+            # suppressed until AgentWorkflow has an enclosing workflow span.
+            invocation = None
+            suppression_token = _SUPPRESS_TOOL_SPANS.set(True)
         elif method_name == "call_tool" and isinstance(
             (tool_call := bound_args.arguments.get("ev")), ToolCall
         ):
@@ -220,9 +353,12 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
             "call",
             "acall",
         }:
+            if _SUPPRESS_TOOL_SPANS.get():
+                return None
             parent = self.open_spans.get(parent_span_id or "")
-            if parent is not None and isinstance(
-                parent._invocation, ToolInvocation
+            if parent is not None and (
+                parent._invocation is None
+                or isinstance(parent._invocation, ToolInvocation)
             ):
                 return None
             metadata = instance.metadata
@@ -232,13 +368,18 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
                 tool_description=metadata.description or None,
             )
             if tool_invocation.should_capture_content_on_span:
-                tool_invocation.arguments = _tool_arguments(bound_args)
+                tool_invocation.arguments = _tool_arguments(
+                    instance, bound_args
+                )
             invocation = tool_invocation
         else:
             return None
 
         return _LlamaIndexSpan(
-            id_=id_, parent_id=parent_span_id, invocation=invocation
+            id_=id_,
+            parent_id=parent_span_id,
+            invocation=invocation,
+            suppression_token=suppression_token,
         )
 
     def prepare_to_exit_span(
@@ -252,6 +393,9 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
         span = self.open_spans.get(id_)
         if span is None:
             return None
+        if span._invocation is None:
+            span.stop_suppression()
+            return span
         if isinstance(span._invocation, AgentInvocation):
             _set_agent_output(span._invocation, result)
         elif isinstance(span._invocation, ToolInvocation):
@@ -263,13 +407,16 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
             if tool_output is not None:
                 if span._invocation.should_capture_content_on_span:
                     span._invocation.tool_result = tool_output.raw_output
-                # LlamaIndex converts tool exceptions into ToolOutput values so
-                # the agent can recover. Mark the tool invocation as failed here
-                # because the exception does not reach prepare_to_drop_span().
-                if tool_output.is_error and isinstance(
-                    tool_output.exception, BaseException
-                ):
-                    span._invocation.fail(tool_output.exception)
+                if tool_output.is_error:
+                    # LlamaIndex reports failures such as unknown tools without an
+                    # exception, so provide one to record error telemetry:
+                    # https://github.com/run-llama/llama_index/blob/main/llama-index-core/llama_index/core/agent/workflow/base_agent.py
+                    error = (
+                        tool_output.exception
+                        if isinstance(tool_output.exception, BaseException)
+                        else RuntimeError(tool_output.content)
+                    )
+                    span._invocation.fail(error)
                     return span
         span._invocation.stop()
         return span
@@ -285,6 +432,9 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
         span = self.open_spans.get(id_)
         if span is None:
             return None
+        if span._invocation is None:
+            span.stop_suppression()
+            return span
         if err is None:
             span._invocation.stop()
         else:
