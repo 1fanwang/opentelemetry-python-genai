@@ -119,6 +119,7 @@ class LangChainInstrumentor(BaseInstrumentor):
         try:
             import langgraph.prebuilt
             import langgraph.pregel
+
             for method in ("stream", "astream"):
                 unwrap(langgraph.pregel.Pregel, method)
             for symbol in (

@@ -673,3 +673,13 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     ancestor_agent_names.add(entity.agent_name.lower())
             current = self._invocation_manager.get_parent_run_id(current)
         return nearest_agent, ancestor_agent_names
+
+    def _find_nearest_agent(
+        self, run_id: UUID | None
+    ) -> AgentInvocation | None:
+        """Return the nearest enclosing agent invocation, or None.
+
+        Thin accessor over _find_agent_context for callers and tests that
+        only need the nearest agent, not the ancestor-name set.
+        """
+        return self._find_agent_context(run_id)[0]

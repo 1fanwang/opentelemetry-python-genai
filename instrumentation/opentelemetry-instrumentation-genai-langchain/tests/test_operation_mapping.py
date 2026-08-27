@@ -9,10 +9,11 @@ Tests the public API: classify_chain_run, resolve_agent_name.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Self
+from typing import Any
 
 import langchain.agents
 import pytest
+from typing_extensions import Self
 from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )

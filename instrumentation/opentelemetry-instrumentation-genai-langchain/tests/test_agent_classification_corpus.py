@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import asyncio
 from importlib import import_module
-from typing import Any, Self
+from typing import Any
 from unittest import mock
 
 import langchain.agents
 import pytest
+from typing_extensions import Self
 from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
