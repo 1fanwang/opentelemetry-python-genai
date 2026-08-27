@@ -92,11 +92,12 @@ def resolve_agent_name(
     metadata: dict[str, Any] | None,
     kwargs: dict[str, Any],
     declared_agent_name: str | None = None,
+    ancestor_agent_names: set[str] | None = None,
 ) -> str | None:
     """Derive the best-effort agent name from callback arguments.
 
     Checks (in priority order):
-    1. ``metadata["agent_name"]``
+    1. ``metadata["agent_name"]`` unless inherited from an enclosing agent
     2. ``declared_agent_name`` (the name a ``create_agent`` graph announced)
     3. ``kwargs["name"]``
     4. ``serialized["name"]``
@@ -105,7 +106,13 @@ def resolve_agent_name(
     if metadata:
         name = metadata.get(_META_AGENT_NAME)
         if name:
-            return str(name)
+            metadata_name = str(name)
+            if not (
+                declared_agent_name
+                and ancestor_agent_names
+                and metadata_name.lower() in ancestor_agent_names
+            ):
+                return metadata_name
 
     if declared_agent_name:
         return declared_agent_name
@@ -182,6 +189,7 @@ def _should_ignore_chain(
     metadata: dict[str, Any] | None,
     agent_name: str | None,
     kwargs: dict[str, Any],
+    declared_agent_name: str | None = None,
 ) -> bool:
     """Return True if the chain callback should be silently suppressed.
 
@@ -207,14 +215,15 @@ def _should_ignore_chain(
         ):
             return True
 
-    if agent_name and agent_name.startswith(MIDDLEWARE_PREFIX):
-        return True
+    if not declared_agent_name:
+        if agent_name and agent_name.startswith(MIDDLEWARE_PREFIX):
+            return True
 
-    name_from_kwargs = kwargs.get("name", "")
-    if isinstance(name_from_kwargs, str) and name_from_kwargs.startswith(
-        MIDDLEWARE_PREFIX
-    ):
-        return True
+        name_from_kwargs = kwargs.get("name", "")
+        if isinstance(name_from_kwargs, str) and name_from_kwargs.startswith(
+            MIDDLEWARE_PREFIX
+        ):
+            return True
 
     return False
 
@@ -242,7 +251,7 @@ def classify_chain_run(
     )
 
     # 1. Suppress known noise.
-    if _should_ignore_chain(metadata, agent_name, kwargs):
+    if _should_ignore_chain(metadata, agent_name, kwargs, declared_agent_name):
         return None
 
     # 2. Agent detection.

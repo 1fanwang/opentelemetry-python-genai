@@ -1,1 +1,1 @@
-Emit ``invoke_agent`` spans for top-level LangChain ``create_agent`` graph roots without misclassifying known descendants; nested agents remain unsupported.
+Emit invoke_agent spans for LangChain create_agent graph roots, including nested agents, which get their own spans.

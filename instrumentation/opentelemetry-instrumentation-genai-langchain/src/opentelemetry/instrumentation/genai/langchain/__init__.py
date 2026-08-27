@@ -119,9 +119,6 @@ class LangChainInstrumentor(BaseInstrumentor):
         try:
             import langgraph.prebuilt
             import langgraph.pregel
-        except ImportError:
-            pass
-        else:
             for method in ("stream", "astream"):
                 unwrap(langgraph.pregel.Pregel, method)
             for symbol in (
@@ -129,6 +126,8 @@ class LangChainInstrumentor(BaseInstrumentor):
                 "create_tool_calling_executor",
             ):
                 unwrap(langgraph.prebuilt, symbol)
+        except (ImportError, AttributeError):
+            pass
         # Clear the TelemetryHandler singleton so the next instrument() uses
         # the provided tracer_provider/meter_provider/logger_provider instead
         # of reusing the previous handler.

@@ -123,6 +123,36 @@ class TestResolveAgentName:
         assert result == "42"
         assert isinstance(result, str)
 
+    def test_metadata_rename_wins_without_ancestors(self):
+        result = resolve_agent_name(
+            serialized={},
+            metadata={"agent_name": "renamed"},
+            kwargs={},
+            declared_agent_name="declared",
+            ancestor_agent_names=set(),
+        )
+        assert result == "renamed"
+
+    def test_inherited_metadata_name_falls_through_to_declared_name(self):
+        result = resolve_agent_name(
+            serialized={},
+            metadata={"agent_name": "outer"},
+            kwargs={},
+            declared_agent_name="inner",
+            ancestor_agent_names={"outer", "middle"},
+        )
+        assert result == "inner"
+
+    def test_inherited_grandparent_name_falls_through_to_declared_name(self):
+        result = resolve_agent_name(
+            serialized={},
+            metadata={"agent_name": "OUTER"},
+            kwargs={},
+            declared_agent_name="inner",
+            ancestor_agent_names={"outer", "middle"},
+        )
+        assert result == "inner"
+
 
 # ---------------------------------------------------------------------------
 # classify_chain_run
