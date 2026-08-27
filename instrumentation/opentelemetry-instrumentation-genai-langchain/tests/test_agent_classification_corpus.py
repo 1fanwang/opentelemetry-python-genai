@@ -12,13 +12,13 @@ from unittest import mock
 
 import langchain.agents
 import pytest
-from typing_extensions import Self
 from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
+from typing_extensions import Self
 
 import opentelemetry.instrumentation.genai.langchain as langchain_instrumentation
 from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor

@@ -13,13 +13,13 @@ from typing import Any
 
 import langchain.agents
 import pytest
-from typing_extensions import Self
 from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from typing_extensions import Self
 
 from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
     OperationName,
