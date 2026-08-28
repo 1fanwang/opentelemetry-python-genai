@@ -6,7 +6,6 @@ from __future__ import annotations
 import inspect
 from base64 import b64decode
 from collections.abc import Mapping, Sequence
-from contextvars import ContextVar, Token
 from mimetypes import guess_type
 from typing import Any, cast
 
@@ -47,10 +46,6 @@ from opentelemetry.util.genai.types import (
     ToolCallRequest,
     ToolDefinition,
     Uri,
-)
-
-_SUPPRESS_TOOL_SPANS: ContextVar[bool] = ContextVar(
-    "llama_index_suppress_tool_spans", default=False
 )
 
 
@@ -265,32 +260,21 @@ def _tool_arguments(
     return arguments
 
 
-class _LlamaIndexSpan(BaseSpan):
-    _invocation: GenAIInvocation | None = PrivateAttr()
-    _suppression_token: Token[bool] | None = PrivateAttr()
+class _LlamaIndexInvocation(BaseSpan):
+    _invocation: GenAIInvocation = PrivateAttr()
 
     def __init__(
         self,
         *,
         id_: str,
         parent_id: str | None,
-        invocation: GenAIInvocation | None,
-        suppression_token: Token[bool] | None = None,
+        invocation: GenAIInvocation,
     ) -> None:
         super().__init__(id_=id_, parent_id=parent_id)
         self._invocation = invocation
-        self._suppression_token = suppression_token
-
-    def stop_suppression(self) -> None:
-        if self._suppression_token is not None:
-            try:
-                _SUPPRESS_TOOL_SPANS.reset(self._suppression_token)
-            except ValueError:
-                pass
-            self._suppression_token = None
 
 
-class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
+class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexInvocation]):
     """Map LlamaIndex-owned agent and tool operations to GenAI spans."""
 
     _handler: TelemetryHandler = PrivateAttr()
@@ -307,20 +291,24 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
         parent_span_id: str | None = None,
         tags: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> _LlamaIndexSpan | None:
+    ) -> _LlamaIndexInvocation | None:
         method_name = _method_name(id_)
-        invocation: GenAIInvocation | None
-        suppression_token: Token[bool] | None = None
+        invocation: GenAIInvocation
 
         if isinstance(instance, BaseWorkflowAgent) and method_name == "run":
+            capture_content = self._handler.should_capture_content()
             agent_name = instance.name or type(instance).__name__
             request_model = _request_model(instance)
             agent_description = instance.description
-            input_messages = _agent_input(bound_args)
+            input_messages = (
+                _agent_input(bound_args) if capture_content else []
+            )
             tool_definitions = _tool_definitions(instance)
             system_prompt = instance.system_prompt
             system_instruction: list[MessagePart] = (
-                [Text(content=system_prompt)] if system_prompt else []
+                [Text(content=system_prompt)]
+                if capture_content and system_prompt
+                else []
             )
             agent_invocation = self._handler.invoke_local_agent(
                 request_model=request_model,
@@ -331,11 +319,6 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
             agent_invocation.tool_definitions = tool_definitions
             agent_invocation.system_instruction = system_instruction
             invocation = agent_invocation
-        elif id_.partition("-")[0] == "AgentWorkflow.call_tool":
-            # Retain a non-recording parent so nested FunctionTool spans are also
-            # suppressed until AgentWorkflow has an enclosing workflow span.
-            invocation = None
-            suppression_token = _SUPPRESS_TOOL_SPANS.set(True)
         elif method_name == "call_tool" and isinstance(
             (tool_call := bound_args.arguments.get("ev")), ToolCall
         ):
@@ -353,12 +336,9 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
             "call",
             "acall",
         }:
-            if _SUPPRESS_TOOL_SPANS.get():
-                return None
             parent = self.open_spans.get(parent_span_id or "")
-            if parent is not None and (
-                parent._invocation is None
-                or isinstance(parent._invocation, ToolInvocation)
+            if parent is not None and isinstance(
+                parent._invocation, ToolInvocation
             ):
                 return None
             metadata = instance.metadata
@@ -375,11 +355,10 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
         else:
             return None
 
-        return _LlamaIndexSpan(
+        return _LlamaIndexInvocation(
             id_=id_,
             parent_id=parent_span_id,
             invocation=invocation,
-            suppression_token=suppression_token,
         )
 
     def prepare_to_exit_span(
@@ -389,15 +368,13 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
         instance: Any | None = None,
         result: Any | None = None,
         **kwargs: Any,
-    ) -> _LlamaIndexSpan | None:
+    ) -> _LlamaIndexInvocation | None:
         span = self.open_spans.get(id_)
         if span is None:
             return None
-        if span._invocation is None:
-            span.stop_suppression()
-            return span
         if isinstance(span._invocation, AgentInvocation):
-            _set_agent_output(span._invocation, result)
+            if self._handler.should_capture_content():
+                _set_agent_output(span._invocation, result)
         elif isinstance(span._invocation, ToolInvocation):
             tool_output: ToolOutput | None = None
             if isinstance(result, ToolCallResult):
@@ -428,13 +405,10 @@ class LlamaIndexSpanHandler(BaseSpanHandler[_LlamaIndexSpan]):
         instance: Any | None = None,
         err: BaseException | None = None,
         **kwargs: Any,
-    ) -> _LlamaIndexSpan | None:
+    ) -> _LlamaIndexInvocation | None:
         span = self.open_spans.get(id_)
         if span is None:
             return None
-        if span._invocation is None:
-            span.stop_suppression()
-            return span
         if err is None:
             span._invocation.stop()
         else:

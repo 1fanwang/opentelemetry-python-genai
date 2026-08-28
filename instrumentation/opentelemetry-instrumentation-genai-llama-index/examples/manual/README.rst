@@ -3,6 +3,8 @@ OpenTelemetry LlamaIndex Instrumentation Example
 
 This example configures the OpenTelemetry SDK and LlamaIndex instrumentation
 manually. It exports traces, logs, and metrics to an OTLP-compatible endpoint.
+The trace includes LlamaIndex ``invoke_agent`` and ``execute_tool`` spans plus
+the OpenAI inference spans emitted by the provider instrumentation.
 
 Setup
 -----

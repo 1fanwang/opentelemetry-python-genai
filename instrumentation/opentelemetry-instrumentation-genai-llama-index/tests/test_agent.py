@@ -33,8 +33,10 @@ from llama_index.core.workflow.errors import WorkflowRuntimeError
 from openai import RateLimitError
 
 from opentelemetry.instrumentation.genai.llama_index._handler import (
+    _agent_input,
     _input_message,
     _output_message,
+    _set_agent_output,
     _tool_definition,
 )
 from opentelemetry.sdk.trace import ReadableSpan
@@ -217,6 +219,44 @@ async def test_agent_run_span(
         {"content": "Be concise.", "type": "text"}
     ]
     assert GenAIAttributes.GEN_AI_PROVIDER_NAME not in attrs
+
+
+@pytest.mark.asyncio
+async def test_agent_content_extraction_is_opt_in(
+    span_exporter, instrument_llama_index
+) -> None:
+    def echo(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    agent = FunctionAgent(
+        name="no-content-agent",
+        system_prompt="Do not capture this.",
+        llm=MockFunctionCallingLLM(is_chat_model=True),
+        tools=[FunctionTool.from_defaults(echo)],
+        streaming=False,
+    )
+
+    with (
+        patch(
+            "opentelemetry.instrumentation.genai.llama_index._handler._agent_input",
+            wraps=_agent_input,
+        ) as input_spy,
+        patch(
+            "opentelemetry.instrumentation.genai.llama_index._handler._set_agent_output",
+            wraps=_set_agent_output,
+        ) as output_spy,
+    ):
+        await agent.run(user_msg="Do not capture this either.")
+
+    input_spy.assert_not_called()
+    output_spy.assert_not_called()
+    span = _spans_named(span_exporter, "invoke_agent no-content-agent")[0]
+    attrs = dict(span.attributes or {})
+    assert GenAIAttributes.GEN_AI_INPUT_MESSAGES not in attrs
+    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in attrs
+    assert GenAIAttributes.GEN_AI_SYSTEM_INSTRUCTIONS not in attrs
+    assert GenAIAttributes.GEN_AI_TOOL_DEFINITIONS in attrs
 
 
 @pytest.mark.asyncio
@@ -681,7 +721,7 @@ async def test_unknown_tool_output_marks_tool_span_as_error(
 
 
 @pytest.mark.asyncio
-async def test_agent_workflow_suppresses_orphan_tool_spans(
+async def test_agent_workflow_emits_tool_span(
     span_exporter, instrument_llama_index
 ) -> None:
     def echo(value: str) -> str:
@@ -715,10 +755,12 @@ async def test_agent_workflow_suppresses_orphan_tool_spans(
 
     result = await workflow.run(user_msg="Call echo")
     assert result.response.content == "done"
-    assert not _spans_named(span_exporter, "execute_tool echo")
+    tool_spans = _spans_named(span_exporter, "execute_tool echo")
+    assert len(tool_spans) == 1
+    assert tool_spans[0].parent is None
 
     FunctionTool.from_defaults(echo)(value="after workflow")
-    assert len(_spans_named(span_exporter, "execute_tool echo")) == 1
+    assert len(_spans_named(span_exporter, "execute_tool echo")) == 2
 
 
 def test_sync_tool_span(

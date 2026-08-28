@@ -5,6 +5,7 @@ import asyncio
 import os
 
 from llama_index.core.agent.workflow import FunctionAgent
+from llama_index.core.tools import FunctionTool
 from llama_index.llms.openai import OpenAI
 
 from opentelemetry import _logs, metrics, trace
@@ -20,6 +21,7 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
 from opentelemetry.instrumentation.genai.llama_index import (
     LlamaIndexInstrumentor,
 )
+from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -44,15 +46,24 @@ metrics.set_meter_provider(
 )
 
 LlamaIndexInstrumentor().instrument()
+OpenAIInstrumentor().instrument()
+
+
+def get_weather(city: str) -> str:
+    """Get the weather for a city."""
+    return f"It is sunny in {city}."
 
 
 async def main() -> None:
     agent = FunctionAgent(
         name="assistant",
         llm=OpenAI(model=os.getenv("CHAT_MODEL", "gpt-4o-mini")),
+        tools=[FunctionTool.from_defaults(get_weather)],
         streaming=False,
     )
-    response = await agent.run(user_msg="Hello!")
+    response = await agent.run(
+        user_msg="Use get_weather to check the weather in Paris."
+    )
     print(response)
 
 

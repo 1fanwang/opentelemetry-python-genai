@@ -3,6 +3,8 @@ OpenTelemetry LlamaIndex Zero-Code Instrumentation Example
 
 This example uses the ``opentelemetry-instrument`` CLI to configure and
 instrument a LlamaIndex application without telemetry setup in the application.
+The trace includes LlamaIndex ``invoke_agent`` and ``execute_tool`` spans plus
+the OpenAI inference spans emitted by the provider instrumentation.
 
 Setup
 -----
