@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from importlib import import_module
 from typing import Any
 from unittest import mock
@@ -38,6 +39,7 @@ if create_agent is None:
         allow_module_level=True,
     )
 
+create_react_agent = import_module("langgraph.prebuilt").create_react_agent
 langgraph_graph = import_module("langgraph.graph")
 END = langgraph_graph.END
 START = langgraph_graph.START
@@ -69,6 +71,21 @@ def test_uninstrument_tolerates_missing_pregel(
     monkeypatch.setattr(langchain_instrumentation, "unwrap", mock.Mock())
 
     LangChainInstrumentor()._uninstrument()
+
+
+def test_uninstrument_restores_pregel_when_prebuilt_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    langgraph_pregel = import_module("langgraph.pregel")
+    original_stream = langgraph_pregel.Pregel.stream
+    original_astream = langgraph_pregel.Pregel.astream
+    LangChainInstrumentor()._instrument_agent_entry_points()
+    monkeypatch.setitem(sys.modules, "langgraph.prebuilt", None)
+
+    LangChainInstrumentor()._uninstrument()
+
+    assert langgraph_pregel.Pregel.stream is original_stream
+    assert langgraph_pregel.Pregel.astream is original_astream
 
 
 def _handler() -> tuple[OpenTelemetryLangChainCallbackHandler, mock.MagicMock]:
@@ -103,11 +120,11 @@ def _agent_names(telemetry: mock.MagicMock) -> list[str]:
 
 @pytest.mark.parametrize(
     ("name", "expected_name"),
-    [(None, "LangGraph"), ("named_agent", "named_agent")],
+    [(None, None), ("named_agent", "named_agent")],
 )
 def test_create_agent_root(
     name: str | None,
-    expected_name: str,
+    expected_name: str | None,
     span_exporter,
     start_instrumentation,
 ) -> None:
@@ -119,10 +136,43 @@ def test_create_agent_root(
     ).invoke({"messages": [("user", "hi")]})
 
     spans = span_exporter.get_finished_spans()
-    assert [span.name for span in spans] == [f"invoke_agent {expected_name}"]
+    expected_span_name = (
+        f"invoke_agent {expected_name}" if expected_name else "invoke_agent"
+    )
+    assert [span.name for span in spans] == [expected_span_name]
     agent_span = spans[0]
     assert agent_span.parent is None
-    assert agent_span.attributes["gen_ai.agent.name"] == expected_name
+    if expected_name:
+        assert agent_span.attributes["gen_ai.agent.name"] == expected_name
+    else:
+        assert "gen_ai.agent.name" not in agent_span.attributes
+
+
+def test_unnamed_create_agent_has_no_placeholder_name(
+    span_exporter, start_instrumentation
+) -> None:
+    create_agent(
+        FakeModel(responses=[AIMessage(content="done")]),
+        [noop],
+    ).invoke({"messages": [("user", "hi")]})
+
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["invoke_agent"]
+    assert "gen_ai.agent.name" not in spans[0].attributes
+
+
+def test_preimported_create_react_agent_is_classified_at_runtime(
+    span_exporter, start_instrumentation
+) -> None:
+    create_react_agent(
+        FakeModel(responses=[AIMessage(content="done")]),
+        [noop],
+        name="react_agent",
+    ).invoke({"messages": [("user", "hi")]})
+
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["invoke_agent react_agent"]
+    assert spans[0].attributes["gen_ai.agent.name"] == "react_agent"
 
 
 def test_create_agent_name_wins_over_run_name_override(
@@ -222,6 +272,19 @@ def test_plain_state_graph_is_not_an_agent() -> None:
     telemetry.invoke_local_agent.assert_not_called()
 
 
+def test_plain_state_graph_with_agent_node_is_not_an_agent() -> None:
+    handler, telemetry = _handler()
+    builder = StateGraph(dict[str, int])
+    builder.add_node("agent", lambda state: {"value": state["value"] + 1})
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    builder.compile(name="support_pipeline").invoke(
+        {"value": 1}, {"callbacks": [handler]}
+    )
+
+    telemetry.invoke_local_agent.assert_not_called()
+
+
 def _span_named(spans: list[Any], name: str) -> Any:
     matches = [span for span in spans if span.name == name]
     assert len(matches) == 1, [
@@ -247,7 +310,7 @@ def _assert_parent(child: Any, parent: Any) -> None:
     assert child.parent.span_id == parent.context.span_id
 
 
-def test_nested_agent_maintainer_repro(
+def test_nested_agent_emits_no_extra_agent_spans(
     span_exporter, start_instrumentation
 ) -> None:
     inner = create_agent(
@@ -280,6 +343,11 @@ def test_nested_agent_maintainer_repro(
     outer.invoke({"messages": [("user", "start")]})
 
     spans = span_exporter.get_finished_spans()
+    assert sorted(span.name for span in spans) == [
+        "execute_tool delegate",
+        "invoke_agent inner",
+        "invoke_agent math_agent",
+    ]
     outer_span = _root_span_named(spans, "invoke_agent math_agent")
     tool_span = _span_named(spans, "execute_tool delegate")
     inner_span = _span_named(spans, "invoke_agent inner")

@@ -84,7 +84,7 @@ def create_agent_graph_name(config: Any) -> str | None:
     ):
         return None
     name = typed_metadata.get(_META_LANGCHAIN_AGENT_NAME)
-    return str(name) if name else LANGGRAPH_IDENTIFIER
+    return str(name) if name else None
 
 
 def resolve_agent_name(
@@ -93,6 +93,7 @@ def resolve_agent_name(
     kwargs: dict[str, Any],
     declared_agent_name: str | None = None,
     ancestor_agent_names: set[str] | None = None,
+    announced_agent: bool = False,
 ) -> str | None:
     """Derive the best-effort agent name from callback arguments.
 
@@ -108,14 +109,15 @@ def resolve_agent_name(
         if name:
             metadata_name = str(name)
             if not (
-                declared_agent_name
-                and ancestor_agent_names
+                ancestor_agent_names
                 and metadata_name.lower() in ancestor_agent_names
             ):
                 return metadata_name
 
     if declared_agent_name:
         return declared_agent_name
+    if announced_agent:
+        return None
 
     name = kwargs.get("name")
     if name:
@@ -133,7 +135,10 @@ def resolve_agent_name(
     return None
 
 
-def _has_agent_signals(metadata: dict[str, Any] | None) -> bool:
+def _has_agent_signals(
+    metadata: dict[str, Any] | None,
+    ancestor_agent_names: set[str] | None = None,
+) -> bool:
     """Return True when metadata contains any signal that the chain is an agent.
 
     ``create_agent`` graphs are recognized by their announcement instead - the
@@ -141,9 +146,15 @@ def _has_agent_signals(metadata: dict[str, Any] | None) -> bool:
     """
     if not metadata:
         return False
+    metadata_name = metadata.get(_META_AGENT_NAME)
+    inherited_name = bool(
+        metadata_name
+        and ancestor_agent_names
+        and str(metadata_name).lower() in ancestor_agent_names
+    )
     return bool(
         metadata.get(_META_AGENT_SPAN)
-        or metadata.get(_META_AGENT_NAME)
+        or (metadata_name and not inherited_name)
         or metadata.get(_META_AGENT_TYPE)
     )
 
@@ -234,6 +245,8 @@ def classify_chain_run(
     kwargs: dict[str, Any],
     parent_run_id: UUID | None = None,
     declared_agent_name: str | None = None,
+    announced_agent: bool = False,
+    ancestor_agent_names: set[str] | None = None,
 ) -> str | None:
     """Classify a ``on_chain_start`` callback into a semconv operation.
 
@@ -247,7 +260,12 @@ def classify_chain_run(
     4. Default: ``None`` (suppress – unclassified chains are not emitted).
     """
     agent_name = resolve_agent_name(
-        serialized, metadata, kwargs, declared_agent_name
+        serialized,
+        metadata,
+        kwargs,
+        declared_agent_name,
+        ancestor_agent_names,
+        announced_agent,
     )
 
     # 1. Suppress known noise.
@@ -255,7 +273,11 @@ def classify_chain_run(
         return None
 
     # 2. Agent detection.
-    if declared_agent_name or _has_agent_signals(metadata):
+    if (
+        announced_agent
+        or declared_agent_name
+        or _has_agent_signals(metadata, ancestor_agent_names)
+    ):
         return OperationName.INVOKE_AGENT
 
     # 3. Workflow / orchestration detection.

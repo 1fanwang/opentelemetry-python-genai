@@ -33,7 +33,6 @@ from wrapt import wrap_function_wrapper
 
 from opentelemetry.instrumentation.genai.langchain.agent_context import (
     wrap_astream,
-    wrap_create_react_agent,
     wrap_stream,
 )
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
@@ -101,32 +100,16 @@ class LangChainInstrumentor(BaseInstrumentor):
                 # classification stays metadata-based.
                 return
 
-        # create_react_agent is deprecated but still ships its own builder that
-        # bakes in none of the create_agent markers, so tag what it returns.
-        for symbol in ("create_react_agent", "create_tool_calling_executor"):
-            try:
-                wrap_function_wrapper(
-                    "langgraph.prebuilt", symbol, wrap_create_react_agent
-                )
-            except (ImportError, AttributeError):
-                pass
-
     def _uninstrument(self, **kwargs: Any):
         """
         Cleanup instrumentation (unwrap).
         """
         unwrap("langchain_core.callbacks.base.BaseCallbackManager", "__init__")
         try:
-            import langgraph.prebuilt
             import langgraph.pregel
 
             for method in ("stream", "astream"):
                 unwrap(langgraph.pregel.Pregel, method)
-            for symbol in (
-                "create_react_agent",
-                "create_tool_calling_executor",
-            ):
-                unwrap(langgraph.prebuilt, symbol)
         except (ImportError, AttributeError):
             pass
         # Clear the TelemetryHandler singleton so the next instrument() uses

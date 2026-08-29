@@ -14,23 +14,23 @@ handler consults when the root run starts.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
     create_agent_graph_name,
 )
 
-_AGENT_NAME_ATTR = "_otel_genai_agent_name"
+_REACT_AGENT_MODULE = "langgraph.prebuilt.chat_agent_executor"
 
 
 @dataclass
 class _PendingAgent:
     """An agent graph that has started running but whose root run is not seen yet."""
 
-    name: str
+    name: str | None
     claimed: bool = False
 
 
@@ -39,8 +39,8 @@ _pending: ContextVar[tuple[_PendingAgent, ...]] = ContextVar(
 )
 
 
-def claim_agent() -> str | None:
-    """Return the announced agent name if this run is a create_agent graph root.
+def claim_agent() -> _PendingAgent | None:
+    """Return the announcement if this run is a create_agent graph root.
 
     The announcement is made as the graph starts, so the first chain run to see
     it is the graph's root. Only the innermost announcement is claimable, and
@@ -55,41 +55,50 @@ def claim_agent() -> str | None:
     if entry.claimed:
         return None
     entry.claimed = True
-    return entry.name
+    return entry
 
 
-def _agent_name(graph: Any) -> str | None:
-    """Return the agent name a compiled graph identifies itself with, if any."""
-    marked = getattr(graph, _AGENT_NAME_ATTR, None)
-    if marked:
-        return str(marked)
-    return create_agent_graph_name(getattr(graph, "config", None))
+def _react_agent_name(graph: Any) -> str | None:
+    """Return the name of a deprecated ``create_react_agent`` graph.
 
-
-def wrap_create_react_agent(
-    wrapped: Callable[..., Any],
-    instance: Any,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> Any:
-    """Tag a ``create_react_agent`` graph so it announces itself like create_agent.
-
-    The deprecated LangGraph builder compiles its own graph and leaves ``config``
-    unset, so it carries none of the markers ``create_agent`` bakes in. Marking
-    the object keeps it out of the graph's runtime config, which would otherwise
-    show up in the user's own run metadata.
+    Checking the builder function's runtime callable avoids import-order
+    dependence without treating every user graph with a node named ``agent`` as
+    an agent.
     """
-    graph = wrapped(*args, **kwargs)
-    name = kwargs.get("name") or getattr(graph, "name", None)
-    if name:
-        try:
-            object.__setattr__(graph, _AGENT_NAME_ATTR, str(name))
-        except (AttributeError, TypeError):
-            pass
-    return graph
+    nodes = getattr(graph, "nodes", None)
+    if not isinstance(nodes, Mapping):
+        return None
+    agent_node = cast("Mapping[str, Any]", nodes).get("agent")
+    bound = getattr(agent_node, "bound", None)
+    function = getattr(bound, "func", None)
+    if getattr(function, "__module__", None) != _REACT_AGENT_MODULE:
+        return None
+    name = getattr(graph, "name", None)
+    return str(name) if name and name != "LangGraph" else ""
 
 
-def _push(name: str) -> _PendingAgent:
+def _agent_name(graph: Any) -> tuple[bool, str | None]:
+    """Return whether ``graph`` is an agent and its application-provided name."""
+    config = getattr(graph, "config", None)
+    create_agent_name = create_agent_graph_name(config)
+    if create_agent_name:
+        return True, create_agent_name
+    if isinstance(config, Mapping):
+        metadata = cast("Mapping[str, Any]", config).get("metadata")
+        if isinstance(metadata, Mapping):
+            typed_metadata = cast("Mapping[str, Any]", metadata)
+            if (
+                typed_metadata.get("ls_integration")
+                == "langchain_create_agent"
+            ):
+                return True, None
+    react_name = _react_agent_name(graph)
+    if react_name is not None:
+        return True, react_name or None
+    return False, None
+
+
+def _push(name: str | None) -> _PendingAgent:
     """Announce ``name`` as the innermost running agent."""
     entry = _PendingAgent(name)
     _pending.set(_pending.get() + (entry,))
@@ -113,8 +122,8 @@ def wrap_stream(
 
     ``Pregel.invoke`` runs through ``stream``, so this covers both entry points.
     """
-    name = _agent_name(instance)
-    if name is None:
+    is_agent, name = _agent_name(instance)
+    if not is_agent:
         return wrapped(*args, **kwargs)
     return _announce_at_stream_start(wrapped(*args, **kwargs), name)
 
@@ -129,14 +138,14 @@ def wrap_astream(
 
     ``Pregel.ainvoke`` runs through ``astream``, so this covers both entry points.
     """
-    name = _agent_name(instance)
-    if name is None:
+    is_agent, name = _agent_name(instance)
+    if not is_agent:
         return wrapped(*args, **kwargs)
     return _announce_at_astream_start(wrapped(*args, **kwargs), name)
 
 
 def _announce_at_stream_start(
-    stream: Iterator[Any], name: str
+    stream: Iterator[Any], name: str | None
 ) -> Iterator[Any]:
     """Announce ``name`` for the first step of ``stream`` only.
 
@@ -161,7 +170,7 @@ def _announce_at_stream_start(
 
 
 async def _announce_at_astream_start(
-    stream: AsyncIterator[Any], name: str
+    stream: AsyncIterator[Any], name: str | None
 ) -> AsyncIterator[Any]:
     """Announce ``name`` for the first step of ``stream`` only."""
     iterator = stream.__aiter__()

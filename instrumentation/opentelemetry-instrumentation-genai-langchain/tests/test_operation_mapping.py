@@ -301,7 +301,7 @@ class TestClassifyChainRun:
         assert outer_agent.attributes["gen_ai.agent.name"] == "outer_agent"
         assert "gen_ai.agent.name" not in tool_span.attributes
 
-    def test_unnamed_nested_agent_falls_back_to_the_langgraph_name(
+    def test_unnamed_nested_agent_has_no_placeholder_name(
         self, span_exporter, start_instrumentation
     ):
         inner = _create_agent(
@@ -334,7 +334,7 @@ class TestClassifyChainRun:
 
         spans = span_exporter.get_finished_spans()
         assert [span.name for span in spans] == [
-            "invoke_agent LangGraph",
+            "invoke_agent",
             "execute_tool delegate",
             "invoke_agent outer_agent",
         ]
@@ -342,7 +342,7 @@ class TestClassifyChainRun:
         assert outer_agent.parent is None
         assert tool_span.parent.span_id == outer_agent.context.span_id
         assert inner_agent.parent.span_id == tool_span.context.span_id
-        assert inner_agent.attributes["gen_ai.agent.name"] == "LangGraph"
+        assert "gen_ai.agent.name" not in inner_agent.attributes
         assert outer_agent.attributes["gen_ai.agent.name"] == "outer_agent"
         assert "gen_ai.agent.name" not in tool_span.attributes
 

@@ -78,13 +78,18 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         )
         # A claimed announcement is proof this run is a create_agent root, which
         # the callback metadata alone cannot establish for a nested agent.
-        declared_agent_name = claim_agent()
+        agent_announcement = claim_agent()
+        declared_agent_name = (
+            agent_announcement.name if agent_announcement else None
+        )
         operation = classify_chain_run(
             serialized,
             metadata,
             kwargs,
             parent_run_id,
             declared_agent_name,
+            agent_announcement is not None,
+            ancestor_agent_names,
         )
 
         if operation == OperationName.INVOKE_WORKFLOW:
@@ -107,6 +112,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 kwargs,
                 declared_agent_name,
                 ancestor_agent_names,
+                agent_announcement is not None,
             )
             # find if there is an agent already
             agent_invocation = parent_agent
@@ -124,7 +130,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 # non-announced runs, suppress a repeated metadata name matching the
                 # enclosing agent - that repetition is inherited config, not a new agent.
                 if (
-                    declared_agent_name
+                    agent_announcement is not None
                     or suggested_agent_name_lower
                     != agent_invocation_name_lower
                 ):
@@ -157,6 +163,14 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     self._invocation_manager.add_invocation_state(
                         run_id, parent_run_id, None
                     )
+            elif agent_announcement is not None:
+                agent = self._telemetry_handler.invoke_local_agent(
+                    agent_name=None,
+                )
+                agent.input_messages = make_input_message(inputs)
+                self._invocation_manager.add_invocation_state(
+                    run_id, parent_run_id, agent
+                )
             else:
                 # No agent name could be resolved; still register the run_id so that
                 # parent-child traversal (e.g. _find_nearest_agent) is not broken for
