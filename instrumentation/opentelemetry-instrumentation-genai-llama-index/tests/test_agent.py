@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
 from llama_index.core.agent.workflow import (
@@ -22,8 +23,10 @@ from llama_index.core.base.llms.types import (
     ThinkingBlock,
     ToolCallBlock,
 )
+from llama_index.core.instrumentation.span_handlers import SimpleSpanHandler
 from llama_index.core.llms import ChatMessage, MockFunctionCallingLLM
 from llama_index.core.tools import (
+    AsyncBaseTool,
     BaseTool,
     FunctionTool,
     ToolMetadata,
@@ -35,6 +38,7 @@ from openai import RateLimitError
 from opentelemetry.instrumentation.genai.llama_index._handler import (
     _agent_input,
     _input_message,
+    _method_name,
     _output_message,
     _set_agent_output,
     _tool_definition,
@@ -48,12 +52,12 @@ from opentelemetry.semconv.attributes import (
 )
 from opentelemetry.trace import SpanKind, StatusCode
 from opentelemetry.util.genai.types import (
-    Blob,
+    BlobPart,
     GenericToolDefinition,
-    Reasoning,
-    Text,
-    ToolCallRequest,
-    Uri,
+    ReasoningPart,
+    TextPart,
+    ToolCallRequestPart,
+    UriPart,
 )
 
 
@@ -65,6 +69,29 @@ def _assert_error_type(span: ReadableSpan, expected: str) -> None:
     error_type = span.attributes[ErrorAttributes.ERROR_TYPE]
     assert isinstance(error_type, str)
     assert error_type.rsplit(".", 1)[-1] == expected
+
+
+@pytest.mark.parametrize(
+    ("span_id", "expected"),
+    [
+        (
+            "FunctionAgent.run-550e8400-e29b-41d4-a716-446655440000",
+            "run",
+        ),
+        (
+            "BaseWorkflowAgent.call_tool-550e8400-e29b-41d4-a716-446655440000",
+            "call_tool",
+        ),
+        (
+            "FunctionTool.acall-550e8400-e29b-41d4-a716-446655440000",
+            "acall",
+        ),
+    ],
+)
+def test_method_name_extracts_dispatcher_method(
+    span_id: str, expected: str
+) -> None:
+    assert _method_name(span_id) == expected
 
 
 def test_input_message_preserves_tool_call_blocks() -> None:
@@ -83,8 +110,8 @@ def test_input_message_preserves_tool_call_blocks() -> None:
     converted = _input_message(message)
 
     assert converted.parts == [
-        Text(content="I will check the weather."),
-        ToolCallRequest(
+        TextPart(content="I will check the weather."),
+        ToolCallRequestPart(
             id="weather-call",
             name="weather",
             arguments={"city": "Paris"},
@@ -107,7 +134,7 @@ def test_output_message_preserves_tool_call_blocks() -> None:
     converted = _output_message(message)
 
     assert converted.parts == [
-        ToolCallRequest(
+        ToolCallRequestPart(
             id="weather-call",
             name="weather",
             arguments={"city": "Paris"},
@@ -134,18 +161,18 @@ def test_input_message_preserves_multimodal_blocks() -> None:
     converted = _input_message(message)
 
     assert converted.parts == [
-        Blob(content=image, mime_type="image/png", modality="image"),
-        Uri(
+        BlobPart(content=image, mime_type="image/png", modality="image"),
+        UriPart(
             uri="https://example.com/audio.mp3",
             mime_type="audio/mpeg",
             modality="audio",
         ),
-        Uri(
+        UriPart(
             uri="https://example.com/document.pdf",
             mime_type="application/pdf",
             modality="document",
         ),
-        Reasoning(content="Consider the available evidence."),
+        ReasoningPart(content="Consider the available evidence."),
     ]
 
 
@@ -176,6 +203,63 @@ def test_generic_tool_definition_is_preserved() -> None:
 
     assert _tool_definition(SearchTool()) == GenericToolDefinition(
         name="search", type="SearchTool"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_span_uses_generic_tool_metadata(
+    span_exporter, instrument_llama_index
+) -> None:
+    class StoreTool(AsyncBaseTool):
+        @property
+        def metadata(self) -> ToolMetadata:
+            return ToolMetadata(name="store", description="Store a value.")
+
+        def call(self, value: str) -> ToolOutput:
+            return ToolOutput(
+                tool_name="store",
+                content=value,
+                raw_input={"value": value},
+                raw_output=value,
+            )
+
+        async def acall(self, value: str) -> ToolOutput:
+            return self.call(value)
+
+    def response_generator(messages, **kwargs):
+        if any(message.role.value == "tool" for message in messages):
+            return ChatMessage(role="assistant", content="stored")
+        return ChatMessage(
+            role="assistant",
+            blocks=[
+                ToolCallBlock(
+                    tool_call_id="store-call",
+                    tool_name="store",
+                    tool_kwargs={"value": "hello"},
+                )
+            ],
+        )
+
+    agent = FunctionAgent(
+        name="storage-agent",
+        llm=MockFunctionCallingLLM(
+            is_chat_model=True,
+            response_generator=response_generator,
+        ),
+        tools=[StoreTool()],
+        streaming=False,
+    )
+
+    result = await agent.run(user_msg="Store hello")
+    assert result.response.content == "stored"
+
+    tool_span = _spans_named(span_exporter, "execute_tool store")[0]
+    assert (
+        tool_span.attributes[GenAIAttributes.GEN_AI_TOOL_TYPE] == "StoreTool"
+    )
+    assert (
+        tool_span.attributes[GenAIAttributes.GEN_AI_TOOL_DESCRIPTION]
+        == "Store a value."
     )
 
 
@@ -656,6 +740,7 @@ async def test_agent_recovers_from_tool_error(
     span_exporter,
     instrument_llama_index,
     openai_llm_without_retries,
+    framework_span_handler: SimpleSpanHandler,
     vcr,
 ) -> None:
     def broken_tool() -> None:
@@ -683,6 +768,34 @@ async def test_agent_recovers_from_tool_error(
     assert tool_span.context.trace_id == agent_span.context.trace_id
     assert tool_span.parent is not None
     assert tool_span.parent.span_id == agent_span.context.span_id
+
+    expected_framework_spans = {
+        "FunctionAgent.run": "run",
+        "BaseWorkflowAgent.call_tool": "call_tool",
+        "FunctionTool.acall": "acall",
+    }
+    completed_span_ids = [
+        span.id_
+        for span in (
+            framework_span_handler.completed_spans
+            + framework_span_handler.dropped_spans
+        )
+    ]
+    qualified_names = {
+        span_id.partition("-")[0] for span_id in completed_span_ids
+    }
+    assert expected_framework_spans.keys() <= qualified_names, qualified_names
+    for qualified_name, method_name in expected_framework_spans.items():
+        span_id = next(
+            span_id
+            for span_id in completed_span_ids
+            if span_id.startswith(f"{qualified_name}-")
+        )
+        generated_name, separator, generated_id = span_id.partition("-")
+        assert generated_name == qualified_name
+        assert separator == "-"
+        assert UUID(generated_id).version == 4
+        assert _method_name(span_id) == method_name
 
 
 @pytest.mark.asyncio

@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 
 import pytest
+from llama_index.core.instrumentation.span_handlers import SimpleSpanHandler
 from llama_index.llms.openai import OpenAI
+from llama_index_instrumentation import get_dispatcher
 
 from opentelemetry.instrumentation.genai.llama_index import (
     LlamaIndexInstrumentor,
@@ -37,6 +40,17 @@ def openai_llm() -> OpenAI:
 def openai_llm_without_retries() -> OpenAI:
     # The default three retries would replay an error cassette four times.
     return OpenAI(model="gpt-4o-mini", temperature=0.1, max_retries=0)
+
+
+@pytest.fixture
+def framework_span_handler() -> Iterator[SimpleSpanHandler]:
+    dispatcher = get_dispatcher()
+    handler = SimpleSpanHandler()
+    dispatcher.add_span_handler(handler)
+    try:
+        yield handler
+    finally:
+        dispatcher.span_handlers.remove(handler)
 
 
 @pytest.fixture(scope="module")
