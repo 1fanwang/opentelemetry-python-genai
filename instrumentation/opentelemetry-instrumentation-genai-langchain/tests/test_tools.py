@@ -438,6 +438,34 @@ def test_on_tool_start_and_end_creates_span(monkeypatch):
     )
 
 
+def test_on_tool_start_omits_conversation_id():
+    """semconv does not define gen_ai.conversation.id for execute_tool."""
+    tracer_provider, span_exporter, logger_provider, meter_provider = (
+        _make_providers()
+    )
+    handler = _make_callback_handler(
+        tracer_provider, logger_provider, meter_provider
+    )
+
+    run_id = uuid4()
+    handler.on_tool_start(
+        serialized={"name": "multiply"},
+        input_str="",
+        run_id=run_id,
+        inputs={"a": 3, "b": 4},
+        metadata={"thread_id": "t1"},
+    )
+
+    output = MagicMock()
+    output.content = "12"
+    output.tool_call_id = "call_abc"
+    handler.on_tool_end(output=output, run_id=run_id)
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert gen_ai_attributes.GEN_AI_CONVERSATION_ID not in spans[0].attributes
+
+
 def test_on_tool_start_with_string_input(monkeypatch):
     monkeypatch.setenv(
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY"

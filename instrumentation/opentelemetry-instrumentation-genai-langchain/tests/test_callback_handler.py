@@ -161,6 +161,20 @@ class TestOnChainStartWorkflow:
 
         telemetry.workflow.assert_called_once_with(name="custom_workflow")
 
+    def test_workflow_conversation_id_from_metadata(self):
+        handler, _, workflow_inv, _ = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chain_start(
+            serialized={"name": "MyLangGraph"},
+            inputs={},
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={"thread_id": "t1"},
+        )
+
+        assert workflow_inv.conversation_id == "t1"
+
     def test_workflow_registered_in_invocation_manager(self):
         handler, _, workflow_inv, _ = _make_handler()
         run_id = _run_id()
@@ -239,6 +253,25 @@ class TestOnChainStartAgent:
         )
 
         assert agent_inv.conversation_id == "t1"
+
+    def test_conversation_id_prefers_session_id_over_conversation_id(self):
+        """thread_id > session_id > conversation_id is the resolution order."""
+        handler, _, _, agent_inv = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chain_start(
+            serialized={"name": "math_agent"},
+            inputs={},
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={
+                "agent_name": "math_agent",
+                "conversation_id": "c1",
+                "session_id": "s1",
+            },
+        )
+
+        assert agent_inv.conversation_id == "s1"
 
     def test_duplicate_agent_name_does_not_create_new_span(self):
         """When the nearest ancestor already has the same agent name, no new
@@ -395,6 +428,38 @@ class TestOnChainStartAgent:
 # ---------------------------------------------------------------------------
 # on_chain_start – unclassified
 # ---------------------------------------------------------------------------
+
+
+class TestOnChatModelStartConversationId:
+    def test_conversation_id_from_metadata(self):
+        handler, telemetry, _, _ = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chat_model_start(
+            serialized={"name": "ChatOpenAI"},
+            messages=[[HumanMessage(content="What is 3 * 4?")]],
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={"ls_provider": "openai", "thread_id": "t1"},
+            invocation_params={"model_name": "gpt-4"},
+        )
+
+        assert telemetry.inference.return_value.conversation_id == "t1"
+
+    def test_no_conversation_id_available(self):
+        handler, telemetry, _, _ = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chat_model_start(
+            serialized={"name": "ChatOpenAI"},
+            messages=[[HumanMessage(content="What is 3 * 4?")]],
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={"ls_provider": "openai"},
+            invocation_params={"model_name": "gpt-4"},
+        )
+
+        assert telemetry.inference.return_value.conversation_id is None
 
 
 class TestOnChainStartUnclassified:
@@ -1249,6 +1314,20 @@ class TestOnRetrieverStart:
         assert (
             handler._invocation_manager.get_invocation(run_id) is retrieval_inv
         )
+
+    def test_conversation_id_not_passed_to_invocation(self):
+        """semconv does not define gen_ai.conversation.id for retrieval."""
+        handler, telemetry, _ = _make_handler_with_retrieval()
+        run_id = _run_id()
+
+        handler.on_retriever_start(
+            serialized={},
+            query="what is AI?",
+            run_id=run_id,
+            metadata={"thread_id": "t1"},
+        )
+
+        assert "conversation_id" not in telemetry.retrieval.call_args.kwargs
 
     def test_query_text_set_on_invocation(self):
         handler, _, retrieval_inv = _make_handler_with_retrieval()

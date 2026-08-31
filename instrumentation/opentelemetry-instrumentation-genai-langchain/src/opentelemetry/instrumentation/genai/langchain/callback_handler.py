@@ -53,6 +53,24 @@ from opentelemetry.util.genai.types import (
 
 SUPPORTED_RAPI_RESPONSE_HEADERS = ("x-ms-served-model",)
 
+# Conversation identifier in precedence order.
+CONVERSATION_ID_METADATA_KEYS = (
+    "thread_id",
+    "session_id",
+    "conversation_id",
+)
+
+
+def _conversation_id(metadata: dict[str, Any] | None) -> str | None:
+    """Return the conversation id from a run's own metadata."""
+    if not metadata:
+        return None
+    for key in CONVERSATION_ID_METADATA_KEYS:
+        conversation_id = metadata.get(key)
+        if conversation_id:
+            return str(conversation_id)
+    return None
+
 
 class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
     """
@@ -78,6 +96,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         operation = classify_chain_run(
             serialized, metadata, kwargs, parent_run_id
         )
+        conversation_id = _conversation_id(metadata)
 
         if operation == OperationName.INVOKE_WORKFLOW:
             workflow_name = kwargs.get("name") or serialized.get("name")
@@ -87,6 +106,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             workflow = self._telemetry_handler.workflow(
                 name=workflow_name_override or workflow_name
             )
+            workflow.conversation_id = conversation_id
             workflow.input_messages = make_input_message(inputs)
             self._invocation_manager.add_invocation_state(
                 run_id, parent_run_id, workflow
@@ -112,6 +132,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     agent = self._telemetry_handler.invoke_local_agent(
                         agent_name=suggested_agent_name,
                     )
+                    agent.conversation_id = conversation_id
                     agent.input_messages = make_input_message(inputs)
 
                     if metadata:
@@ -119,16 +140,6 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                         agent.agent_description = metadata.get(
                             "agent_description"
                         )
-
-                        for key in (
-                            "thread_id",
-                            "session_id",
-                            "conversation_id",
-                        ):
-                            conv_id = metadata.get(key)
-                            if conv_id:
-                                agent.conversation_id = conv_id
-                                break
 
                     self._invocation_manager.add_invocation_state(
                         run_id, parent_run_id, agent
@@ -281,6 +292,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             provider,
             request_model=request_model,
         )
+        llm_invocation.conversation_id = _conversation_id(metadata)
         llm_invocation.input_messages = input_messages
         llm_invocation.top_p = top_p
         llm_invocation.frequency_penalty = frequency_penalty
