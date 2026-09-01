@@ -56,7 +56,7 @@ class _InvocationManager:
         invocation_state.ended = True
 
         # Defer removal if any children are still live, so upward traversal
-        # (e.g. _find_nearest_agent) can still walk through this node.
+        # via _find_agent_context can still walk through this node.
         if any(c in self._invocations for c in invocation_state.children):
             return
 

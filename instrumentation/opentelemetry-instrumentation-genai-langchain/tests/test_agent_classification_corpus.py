@@ -22,7 +22,10 @@ from langchain_core.tools import tool
 from typing_extensions import Self
 
 import opentelemetry.instrumentation.genai.langchain as langchain_instrumentation
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+from opentelemetry.instrumentation.genai.langchain import (
+    LangChainInstrumentor,
+    agent_context,
+)
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
@@ -146,6 +149,137 @@ def test_create_agent_root(
         assert agent_span.attributes["gen_ai.agent.name"] == expected_name
     else:
         assert "gen_ai.agent.name" not in agent_span.attributes
+
+
+def test_create_agent_stream_root(
+    span_exporter, start_instrumentation
+) -> None:
+    stream = create_agent(
+        FakeModel(responses=[AIMessage(content="done")]),
+        [noop],
+        name="stream_agent",
+    ).stream({"messages": [("user", "hi")]})
+
+    for _ in stream:
+        pass
+
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["invoke_agent stream_agent"]
+    assert spans[0].parent is None
+    assert spans[0].attributes["gen_ai.agent.name"] == "stream_agent"
+    assert agent_context._pending.get() == ()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_astream_root(
+    span_exporter, start_instrumentation
+) -> None:
+    stream = create_agent(
+        FakeModel(responses=[AIMessage(content="done")]),
+        [noop],
+        name="astream_agent",
+    ).astream({"messages": [("user", "hi")]})
+
+    async for _ in stream:
+        pass
+
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["invoke_agent astream_agent"]
+    assert spans[0].parent is None
+    assert spans[0].attributes["gen_ai.agent.name"] == "astream_agent"
+    assert agent_context._pending.get() == ()
+
+
+class _MarkedAgentGraph:
+    config = {"metadata": {"ls_integration": "langchain_create_agent"}}
+
+
+def _wrapped_stream(source: Any) -> Any:
+    return agent_context.wrap_stream(
+        lambda: source, _MarkedAgentGraph(), (), {}
+    )
+
+
+def _wrapped_astream(source: Any) -> Any:
+    return agent_context.wrap_astream(
+        lambda: source, _MarkedAgentGraph(), (), {}
+    )
+
+
+def test_stream_exception_before_first_item_withdraws_announcement() -> None:
+    _, telemetry = _handler()
+
+    def failing_stream():
+        raise RuntimeError("before first item")
+        yield
+
+    stream = _wrapped_stream(failing_stream())
+    with pytest.raises(RuntimeError, match="before first item"):
+        next(stream)
+
+    assert agent_context._pending.get() == ()
+    telemetry.invoke_local_agent.assert_not_called()
+
+
+def test_stream_abandoned_before_start_does_not_announce() -> None:
+    stream = _wrapped_stream(iter((1,)))
+
+    assert agent_context._pending.get() == ()
+    stream.close()
+    assert agent_context._pending.get() == ()
+
+
+def test_stream_close_after_first_item_withdraws_announcement() -> None:
+    stream = _wrapped_stream(iter((1, 2)))
+
+    next(stream)
+    assert agent_context._pending.get() == ()
+    stream.close()
+    assert agent_context._pending.get() == ()
+
+
+@pytest.mark.asyncio
+async def test_astream_exception_before_first_item_withdraws_announcement() -> (
+    None
+):
+    _, telemetry = _handler()
+
+    async def failing_stream():
+        raise RuntimeError("before first item")
+        yield
+
+    stream = _wrapped_astream(failing_stream())
+    with pytest.raises(RuntimeError, match="before first item"):
+        await stream.__anext__()
+
+    assert agent_context._pending.get() == ()
+    telemetry.invoke_local_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_astream_abandoned_before_start_does_not_announce() -> None:
+    async def source():
+        yield 1
+
+    stream = _wrapped_astream(source())
+
+    assert agent_context._pending.get() == ()
+    await stream.aclose()
+    assert agent_context._pending.get() == ()
+
+
+@pytest.mark.asyncio
+async def test_astream_close_after_first_item_withdraws_announcement() -> None:
+    async def source():
+        yield 1
+        yield 2
+
+    stream = _wrapped_astream(source())
+
+    await stream.__anext__()
+    assert agent_context._pending.get() == ()
+    await stream.aclose()
+    assert agent_context._pending.get() == ()
 
 
 def test_unnamed_create_agent_has_no_placeholder_name(
