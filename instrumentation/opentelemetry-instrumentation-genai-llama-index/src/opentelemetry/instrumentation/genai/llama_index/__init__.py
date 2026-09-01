@@ -53,6 +53,8 @@ __all__ = ["LlamaIndexInstrumentor"]
 class _Dispatcher(Protocol):
     span_handlers: list[BaseSpanHandler[Any]]
 
+    def add_span_handler(self, handler: BaseSpanHandler[Any]) -> None: ...
+
 
 class LlamaIndexInstrumentor(BaseInstrumentor):
     """OpenTelemetry instrumentor for LlamaIndex agents and tools."""
@@ -75,7 +77,7 @@ class LlamaIndexInstrumentor(BaseInstrumentor):
         )
         span_handler = LlamaIndexSpanHandler(handler)
         dispatcher = cast(_Dispatcher, get_dispatcher())
-        dispatcher.span_handlers.append(span_handler)
+        dispatcher.add_span_handler(span_handler)
         self._handler = handler
         self._span_handler = span_handler
 

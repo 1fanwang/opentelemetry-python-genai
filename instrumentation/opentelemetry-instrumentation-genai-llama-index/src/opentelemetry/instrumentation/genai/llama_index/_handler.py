@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+from binascii import Error as BinasciiError
 from base64 import b64decode
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar, Token
@@ -138,7 +139,7 @@ def _media_part(
                 mime_type=mime_type,
                 modality=modality,
             )
-        except ValueError:
+        except (BinasciiError, ValueError):
             pass
     reference = url or path
     if reference is not None:
@@ -190,7 +191,7 @@ def _agent_input(bound_args: inspect.BoundArguments) -> list[InputMessage]:
     if start_event is None:
         return []
 
-    history_value: object = start_event.get("chat_history", default=None)
+    history_value: object = start_event.get("chat_history", None)
     history: Sequence[object] = (
         cast(Sequence[object], history_value)
         if isinstance(history_value, Sequence)
@@ -201,7 +202,7 @@ def _agent_input(bound_args: inspect.BoundArguments) -> list[InputMessage]:
         for message in history or []
         if isinstance(message, ChatMessage)
     ]
-    user_message = start_event.get("user_msg", default=None)
+    user_message = start_event.get("user_msg", None)
     if isinstance(user_message, ChatMessage):
         messages.append(_input_message(user_message))
     elif isinstance(user_message, str) and user_message:
