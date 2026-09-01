@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import inspect
-from binascii import Error as BinasciiError
 from base64 import b64decode
+from binascii import Error as BinasciiError
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar, Token
 from mimetypes import guess_type
