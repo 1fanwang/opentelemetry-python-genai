@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import json
-import pytest
+
 import dspy
+import pytest
 
 try:
     from dspy.adapters.types.tool import ToolCalls

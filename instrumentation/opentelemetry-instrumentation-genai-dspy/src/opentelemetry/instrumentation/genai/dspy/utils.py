@@ -68,7 +68,11 @@ def extract_output_content(
                     filtered_dict[key_str] = output_dict[key_str]
         if not filtered_dict:
             for k_str, v_val in output_dict.items():
-                if k_str not in ("trajectory", "history", "termination_reason"):
+                if k_str not in (
+                    "trajectory",
+                    "history",
+                    "termination_reason",
+                ):
                     filtered_dict[k_str] = v_val
 
         if filtered_dict:

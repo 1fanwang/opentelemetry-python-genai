@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import json
-import pytest
+
 import dspy
+import pytest
 
 from opentelemetry.instrumentation.genai.dspy import DSPyInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
@@ -161,7 +162,9 @@ async def test_react_async_execution(
         meter_provider=meter_provider,
         content_capture="SPAN_ONLY",
     ):
-        tool = dspy.Tool(async_multiply, name="multiply", desc="Multiply numbers.")
+        tool = dspy.Tool(
+            async_multiply, name="multiply", desc="Multiply numbers."
+        )
         react = dspy.ReAct("question -> answer", tools=[tool])
         async_predict = MockAsyncPredict()
         react.react = async_predict

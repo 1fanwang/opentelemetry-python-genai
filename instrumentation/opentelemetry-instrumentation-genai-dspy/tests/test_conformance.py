@@ -21,12 +21,14 @@ from opentelemetry.test_util_genai.conformance import (
 )
 
 from .conformance.react import ReActScenario
+from .conformance.tool import ToolScenario
 
 
 @pytest.mark.parametrize(
     "scenario",
     [
         pytest.param(ReActScenario()),
+        pytest.param(ToolScenario()),
     ],
     ids=lambda s: type(s).__name__,
 )

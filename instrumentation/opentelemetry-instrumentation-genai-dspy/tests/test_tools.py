@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import json
-import pytest
+
 import dspy
+import pytest
 
 from opentelemetry.instrumentation.genai.dspy import DSPyInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
@@ -115,7 +116,9 @@ async def test_async_tool_execution(
         meter_provider=meter_provider,
         content_capture="SPAN_ONLY",
     ):
-        tool = dspy.Tool(async_multiply, name="multiply", desc="Multiply numbers.")
+        tool = dspy.Tool(
+            async_multiply, name="multiply", desc="Multiply numbers."
+        )
         res = await tool.acall(a=5, b=6)
         assert res == 30
 
