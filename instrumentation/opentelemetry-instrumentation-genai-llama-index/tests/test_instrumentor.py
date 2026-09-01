@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from llama_index_instrumentation import get_dispatcher
+from llama_index.core.instrumentation import get_dispatcher
 
 from opentelemetry.instrumentation.genai.llama_index import (
     LlamaIndexInstrumentor,

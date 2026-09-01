@@ -7,9 +7,9 @@ import os
 from collections.abc import Iterator
 
 import pytest
+from llama_index.core.instrumentation import get_dispatcher
 from llama_index.core.instrumentation.span_handlers import SimpleSpanHandler
 from llama_index.llms.openai import OpenAI
-from llama_index_instrumentation import get_dispatcher
 
 from opentelemetry.instrumentation.genai.llama_index import (
     LlamaIndexInstrumentor,

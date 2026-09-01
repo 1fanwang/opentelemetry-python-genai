@@ -34,8 +34,8 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any, Protocol, cast
 
+from llama_index.core.instrumentation import get_dispatcher
 from llama_index.core.instrumentation.span_handlers import BaseSpanHandler
-from llama_index_instrumentation import get_dispatcher
 
 from opentelemetry.instrumentation.genai.llama_index._handler import (
     LlamaIndexSpanHandler,
