@@ -8,19 +8,40 @@ All TelemetryHandler interactions are mocked so that these tests exercise only
 the callback-handler logic and the invocation-manager bookkeeping.
 """
 
+import base64
 import uuid
 from unittest import mock
 
 import pytest
 from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.outputs import ChatGeneration, LLMResult
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    ChatMessage,
+    ChatMessageChunk,
+    FunctionMessage,
+    FunctionMessageChunk,
+    HumanMessage,
+    HumanMessageChunk,
+    RemoveMessage,
+    SystemMessage,
+    SystemMessageChunk,
+    ToolMessage,
+    ToolMessageChunk,
+)
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    LLMResult,
+)
 
 from opentelemetry.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
 from opentelemetry.instrumentation.genai.langchain.utils import (
     _legacy_function_call_request,
+    _media_part,
+    _normalize_role,
     extract_token_details,
     make_input_message,
     make_last_output_message,
@@ -36,10 +57,13 @@ from opentelemetry.util.genai.invocation import (
     WorkflowInvocation,
 )
 from opentelemetry.util.genai.types import (
+    BlobPart,
+    FilePart,
     InputMessage,
     OutputMessage,
-    Text,
-    ToolCallRequest,
+    TextPart,
+    ToolCallRequestPart,
+    UriPart,
 )
 
 # ---------------------------------------------------------------------------
@@ -161,6 +185,20 @@ class TestOnChainStartWorkflow:
 
         telemetry.workflow.assert_called_once_with(name="custom_workflow")
 
+    def test_workflow_conversation_id_from_metadata(self):
+        handler, _, workflow_inv, _ = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chain_start(
+            serialized={"name": "MyLangGraph"},
+            inputs={},
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={"thread_id": "t1"},
+        )
+
+        assert workflow_inv.conversation_id == "t1"
+
     def test_workflow_registered_in_invocation_manager(self):
         handler, _, workflow_inv, _ = _make_handler()
         run_id = _run_id()
@@ -239,6 +277,25 @@ class TestOnChainStartAgent:
         )
 
         assert agent_inv.conversation_id == "t1"
+
+    def test_conversation_id_prefers_session_id_over_conversation_id(self):
+        """thread_id > session_id > conversation_id is the resolution order."""
+        handler, _, _, agent_inv = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chain_start(
+            serialized={"name": "math_agent"},
+            inputs={},
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={
+                "agent_name": "math_agent",
+                "conversation_id": "c1",
+                "session_id": "s1",
+            },
+        )
+
+        assert agent_inv.conversation_id == "s1"
 
     def test_duplicate_agent_name_does_not_create_new_span(self):
         """When the nearest ancestor already has the same agent name, no new
@@ -404,6 +461,38 @@ class TestOnChainStartAgent:
 # ---------------------------------------------------------------------------
 # on_chain_start – unclassified
 # ---------------------------------------------------------------------------
+
+
+class TestOnChatModelStartConversationId:
+    def test_conversation_id_from_metadata(self):
+        handler, telemetry, _, _ = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chat_model_start(
+            serialized={"name": "ChatOpenAI"},
+            messages=[[HumanMessage(content="What is 3 * 4?")]],
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={"ls_provider": "openai", "thread_id": "t1"},
+            invocation_params={"model_name": "gpt-4"},
+        )
+
+        assert telemetry.inference.return_value.conversation_id == "t1"
+
+    def test_no_conversation_id_available(self):
+        handler, telemetry, _, _ = _make_handler()
+        run_id = _run_id()
+
+        handler.on_chat_model_start(
+            serialized={"name": "ChatOpenAI"},
+            messages=[[HumanMessage(content="What is 3 * 4?")]],
+            run_id=run_id,
+            parent_run_id=None,
+            metadata={"ls_provider": "openai"},
+            invocation_params={"model_name": "gpt-4"},
+        )
+
+        assert telemetry.inference.return_value.conversation_id is None
 
 
 class TestOnChainStartUnclassified:
@@ -616,7 +705,7 @@ class TestMakeInputMessage:
         assert isinstance(result[0], InputMessage)
         assert result[0].role == "user"
         assert len(result[0].parts) == 1
-        assert isinstance(result[0].parts[0], Text)
+        assert isinstance(result[0].parts[0], TextPart)
         assert result[0].parts[0].content == "Hello"
 
     def test_messages_key_skips_empty_content(self):
@@ -1139,7 +1228,7 @@ def _make_handler_with_llm_invocation(
 
 class TestOnLlmEndToolCalls:
     def test_openai_tool_calls_finish_reason_produces_tool_call_request(self):
-        """finish_reason='tool_calls' (OpenAI) must produce ToolCallRequest parts."""
+        """finish_reason='tool_calls' (OpenAI) must produce ToolCallRequestPart parts."""
         run_id = _run_id()
         handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
 
@@ -1163,13 +1252,13 @@ class TestOnLlmEndToolCalls:
         assert assigned[0].finish_reason == "tool_calls"
         assert len(assigned[0].parts) == 1
         part = assigned[0].parts[0]
-        assert isinstance(part, ToolCallRequest)
+        assert isinstance(part, ToolCallRequestPart)
         assert part.name == "get_weather"
         assert part.id == "call_123"
         assert part.arguments == {"location": "Paris"}
 
     def test_bedrock_tool_use_finish_reason_produces_tool_call_request(self):
-        """finish_reason='tool_use' (Bedrock/Anthropic) must produce ToolCallRequest parts."""
+        """finish_reason='tool_use' (Bedrock/Anthropic) must produce ToolCallRequestPart parts."""
         run_id = _run_id()
         handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
 
@@ -1194,7 +1283,7 @@ class TestOnLlmEndToolCalls:
         assert assigned[0].finish_reason == "tool_use"
         assert len(assigned[0].parts) == 1
         part = assigned[0].parts[0]
-        assert isinstance(part, ToolCallRequest)
+        assert isinstance(part, ToolCallRequestPart)
         assert part.name == "get_weather"
         assert part.id == "tooluse_abc"
         assert part.arguments == {"location": "London"}
@@ -1220,6 +1309,20 @@ class TestOnRetrieverStart:
         assert (
             handler._invocation_manager.get_invocation(run_id) is retrieval_inv
         )
+
+    def test_conversation_id_not_passed_to_invocation(self):
+        """semconv does not define gen_ai.conversation.id for retrieval."""
+        handler, telemetry, _ = _make_handler_with_retrieval()
+        run_id = _run_id()
+
+        handler.on_retriever_start(
+            serialized={},
+            query="what is AI?",
+            run_id=run_id,
+            metadata={"thread_id": "t1"},
+        )
+
+        assert "conversation_id" not in telemetry.retrieval.call_args.kwargs
 
     def test_query_text_set_on_invocation(self):
         handler, _, retrieval_inv = _make_handler_with_retrieval()
@@ -1532,7 +1635,7 @@ def test_extract_token_details_no_details_key():
     def test_legacy_function_call_finish_reason_produces_tool_call_request(
         self,
     ):
-        """Pre-tools OpenAI ``function_call`` must surface as a ToolCallRequest."""
+        """Pre-tools OpenAI ``function_call`` must surface as a ToolCallRequestPart."""
         run_id = _run_id()
         handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
 
@@ -1557,7 +1660,7 @@ def test_extract_token_details_no_details_key():
         assert len(assigned) == 1
         assert len(assigned[0].parts) == 1
         part = assigned[0].parts[0]
-        assert isinstance(part, ToolCallRequest)
+        assert isinstance(part, ToolCallRequestPart)
         assert part.name == "get_weather"
         assert part.arguments == {"city": "Paris"}
 
@@ -1578,7 +1681,7 @@ def test_legacy_function_call_dict_arguments():
         },
     )
     call = _legacy_function_call_request(message)
-    assert isinstance(call, ToolCallRequest)
+    assert isinstance(call, ToolCallRequestPart)
     assert call.name == "get_weather"
     assert call.arguments == {"city": "New York"}
 
@@ -1594,7 +1697,7 @@ def test_legacy_function_call_string_arguments_parsed():
         },
     )
     call = _legacy_function_call_request(message)
-    assert isinstance(call, ToolCallRequest)
+    assert isinstance(call, ToolCallRequestPart)
     assert call.arguments == {"city": "New York"}
 
 
@@ -1612,7 +1715,7 @@ def test_to_input_messages_includes_legacy_function_call():
     messages = to_input_messages([message])
     assert len(messages) == 1
     assert any(
-        isinstance(p, ToolCallRequest) and p.name == "f"
+        isinstance(p, ToolCallRequestPart) and p.name == "f"
         for p in messages[0].parts
     )
 
@@ -1735,3 +1838,810 @@ class TestOnLlmEndResponseModel:
         handler.on_llm_end(response=response, run_id=run_id)
 
         assert llm_inv.response_model_name == "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# on_llm_end – streamed output messages
+# ---------------------------------------------------------------------------
+
+
+def test_streamed_output_message_role_is_assistant():
+    run_id = _run_id()
+    handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+
+    gen = ChatGenerationChunk(message=AIMessageChunk(content="hello"))
+
+    handler.on_llm_end(response=LLMResult(generations=[[gen]]), run_id=run_id)
+
+    (output_message,) = llm_inv.output_messages
+    assert output_message.role == "assistant"
+
+
+# ---------------------------------------------------------------------------
+# utils._normalize_role
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message,expected_role",
+    [
+        (AIMessage(content="hi"), "assistant"),
+        (AIMessageChunk(content="hi"), "assistant"),
+        (HumanMessage(content="hi"), "user"),
+        (HumanMessageChunk(content="hi"), "user"),
+        (SystemMessage(content="hi"), "system"),
+        (SystemMessageChunk(content="hi"), "system"),
+        (ToolMessage(content="hi", tool_call_id="call_1"), "tool"),
+        (ToolMessageChunk(content="hi", tool_call_id="call_1"), "tool"),
+        (FunctionMessage(content="hi", name="f"), "tool"),
+        (FunctionMessageChunk(content="hi", name="f"), "tool"),
+    ],
+)
+def test_normalize_role_resolves_chunk_variants(message, expected_role):
+    """Chunk classes report their class name as ``.type``
+    (``AIMessageChunk.type == "AIMessageChunk"``), so they only resolve to a
+    spec role when matched by class."""
+    assert _normalize_role(message) == expected_role
+
+
+@pytest.mark.parametrize(
+    "message,expected_role",
+    [
+        (ChatMessage(content="hi", role="assistant"), "assistant"),
+        (ChatMessage(content="hi", role="custom"), "custom"),
+        (ChatMessageChunk(content="hi", role="custom"), "custom"),
+    ],
+)
+def test_normalize_role_reads_the_chat_message_role(message, expected_role):
+    """``ChatMessage`` keeps its speaker in ``role`` rather than in the class."""
+    assert _normalize_role(message) == expected_role
+
+
+def test_normalize_role_returns_none_for_unmapped_class():
+    assert _normalize_role(RemoveMessage(id="abc")) is None
+
+
+def test_chat_message_role_reaches_the_input_side():
+    (message,) = to_input_messages([ChatMessage(content="hi", role="custom")])
+    assert message.role == "custom"
+
+
+# on_llm_end – streamed responses
+#
+# Streaming reaches on_llm_end with an LLMResult that LangChain assembles from
+# the merged chunks alone, so ``llm_output`` — the usual source of
+# ``gen_ai.response.model`` and ``gen_ai.response.id`` — is never populated.
+# ---------------------------------------------------------------------------
+
+
+class TestOnLlmEndStreamedResponse:
+    def test_model_and_id_from_response_metadata(self):
+        """Both fields are read off the message's ``response_metadata``.
+
+        LangChain fills it with the union of ``generation_info`` and whatever
+        the provider wrote onto the message, so this is the one place that
+        covers every provider. The ``generation_info`` half of that union is
+        covered end to end by
+        ``test_chat_openai_streamed_response_model``, which drives a
+        real ``.stream()`` so LangChain performs the copy.
+        """
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+
+        gen = ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="hello",
+                response_metadata={
+                    "model_name": "claude-sonnet-4-5",
+                    "id": "msg_01ABC",
+                },
+            )
+        )
+
+        handler.on_llm_end(
+            response=LLMResult(generations=[[gen]]), run_id=run_id
+        )
+
+        assert llm_inv.response_model_name == "claude-sonnet-4-5"
+        assert llm_inv.response_id == "msg_01ABC"
+
+    def test_model_from_generation_info(self):
+        """A generation that skipped LangChain's merge still reports."""
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+
+        gen = ChatGenerationChunk(
+            message=AIMessageChunk(content="hello"),
+            generation_info={"model_name": "claude-sonnet-4-5"},
+        )
+
+        handler.on_llm_end(
+            response=LLMResult(generations=[[gen]]), run_id=run_id
+        )
+
+        assert llm_inv.response_model_name == "claude-sonnet-4-5"
+
+    def test_response_metadata_wins_over_generation_info(self):
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+
+        gen = ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="hello",
+                response_metadata={"model_name": "from-response-metadata"},
+            ),
+            generation_info={"model_name": "from-generation-info"},
+        )
+
+        handler.on_llm_end(
+            response=LLMResult(generations=[[gen]]), run_id=run_id
+        )
+
+        assert llm_inv.response_model_name == "from-response-metadata"
+
+    def test_message_id_not_used_as_response_id(self):
+        """LangChain puts its own run id on ``message.id`` when the provider
+        supplies none, which must not surface as ``gen_ai.response.id``."""
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+        llm_inv.response_id = None
+
+        gen = ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="hello", id=f"run--{run_id}", chunk_position="last"
+            )
+        )
+
+        handler.on_llm_end(
+            response=LLMResult(generations=[[gen]]), run_id=run_id
+        )
+
+        assert llm_inv.response_id is None
+
+    def test_llm_output_takes_precedence(self):
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+
+        gen = ChatGenerationChunk(
+            message=AIMessageChunk(content="hello"),
+            generation_info={"model_name": "from-generation"},
+        )
+
+        handler.on_llm_end(
+            response=LLMResult(
+                generations=[[gen]],
+                llm_output={"model_name": "from-llm-output"},
+            ),
+            run_id=run_id,
+        )
+
+        assert llm_inv.response_model_name == "from-llm-output"
+
+    def test_served_model_header_takes_precedence(self):
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+
+        gen = ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="hello",
+                response_metadata={
+                    "headers": {"x-ms-served-model": "served-from-header"}
+                },
+            ),
+            generation_info={"model_name": "from-generation"},
+        )
+
+        handler.on_llm_end(
+            response=LLMResult(generations=[[gen]]), run_id=run_id
+        )
+
+        assert llm_inv.response_model_name == "served-from-header"
+
+    def test_no_model_reported_leaves_attribute_unset(self):
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+        llm_inv.response_model_name = None
+
+        gen = ChatGenerationChunk(message=AIMessageChunk(content="hello"))
+
+        handler.on_llm_end(
+            response=LLMResult(generations=[[gen]]), run_id=run_id
+        )
+
+        assert llm_inv.response_model_name is None
+
+    def test_no_id_reported_leaves_attribute_unset(self):
+        run_id = _run_id()
+        handler, _, llm_inv = _make_handler_with_llm_invocation(run_id)
+        llm_inv.response_id = None
+
+        gen = ChatGenerationChunk(message=AIMessageChunk(content="hello"))
+
+        handler.on_llm_end(
+            response=LLMResult(generations=[[gen]]), run_id=run_id
+        )
+
+        assert llm_inv.response_id is None
+
+
+# ---------------------------------------------------------------------------
+# utils._media_part - LangChain multimodal image block parsing
+# ---------------------------------------------------------------------------
+
+_REAL_PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00"
+    b"\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc"
+    b"\xf8\xcf\xc0\xf0\x1f\x00\x05\x05\x02\x00\xa1\r\xf7\xdf\x00\x00\x00"
+    b"\x00IEND\xaeB`\x82"
+)
+_REAL_PNG_B64 = base64.b64encode(_REAL_PNG_BYTES).decode("ascii")
+
+
+def test_media_part_openai_image_url_dict():
+    item = {
+        "type": "image_url",
+        "image_url": {"url": "https://example.com/a.png"},
+    }
+    part = _media_part(item)
+    assert isinstance(part, UriPart)
+    assert part.uri == "https://example.com/a.png"
+
+
+def test_media_part_openai_image_url_string():
+    item = {"type": "image_url", "image_url": "https://example.com/b.png"}
+    part = _media_part(item)
+    assert isinstance(part, UriPart)
+    assert part.uri == "https://example.com/b.png"
+
+
+def test_media_part_anthropic_base64_source_returns_blob():
+    item = {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "R0lGODlh",
+        },
+    }
+    part = _media_part(item)
+    assert isinstance(part, BlobPart)
+    assert part.mime_type == "image/png"
+    assert part.content == b"GIF89a"
+
+
+def test_media_part_anthropic_base64_source_without_media_type():
+    item = {
+        "type": "image",
+        "source": {"type": "base64", "data": "QUJD"},
+    }
+    part = _media_part(item)
+    assert isinstance(part, BlobPart)
+    assert part.mime_type is None
+    assert part.content == b"ABC"
+
+
+def test_media_part_base64_source_decodes_real_png():
+    item = {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": _REAL_PNG_B64,
+        },
+    }
+    part = _media_part(item)
+    assert isinstance(part, BlobPart)
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_anthropic_url_source_returns_uri():
+    item = {
+        "type": "image",
+        "source": {"type": "url", "url": "https://example.com/c.png"},
+    }
+    part = _media_part(item)
+    assert isinstance(part, UriPart)
+    assert part.uri == "https://example.com/c.png"
+
+
+def test_media_part_unrecognized_returns_none():
+    assert _media_part({"type": "text", "text": "hi"}) is None
+    assert _media_part({"type": "image_url", "image_url": {}}) is None
+    assert (
+        _media_part({"type": "image_url", "image_url": {"url": 123}}) is None
+    )
+    assert _media_part({"type": "image", "source": "nope"}) is None
+    assert (
+        _media_part({"type": "image", "source": {"type": "base64", "data": 5}})
+        is None
+    )
+    assert (
+        _media_part({"type": "image", "source": {"type": "url", "url": ""}})
+        is None
+    )
+
+
+def test_media_part_malformed_base64_returns_none():
+    item = {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "not!valid!base64!",
+        },
+    }
+    assert _media_part(item) is None
+
+
+def test_media_part_openai_real_png_data_uri_returns_blob():
+    item = {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/png;base64,{_REAL_PNG_B64}"},
+    }
+    part = _media_part(item)
+    assert isinstance(part, BlobPart)
+    assert part.mime_type == "image/png"
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_anthropic_real_png_source_returns_blob():
+    item = {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": _REAL_PNG_B64,
+        },
+    }
+    part = _media_part(item)
+    assert isinstance(part, BlobPart)
+    assert part.mime_type == "image/png"
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_anthropic_real_png_corrupted_base64_returns_none():
+    corrupted = _REAL_PNG_B64[:10] + "@@@@" + _REAL_PNG_B64[14:]
+    item = {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": corrupted,
+        },
+    }
+    assert _media_part(item) is None
+
+
+def test_media_part_real_png_url_source_returns_uri():
+    item = {
+        "type": "image",
+        "source": {
+            "type": "url",
+            "url": "https://example.com/real-image.png",
+        },
+    }
+    part = _media_part(item)
+    assert isinstance(part, UriPart)
+    assert part.uri == "https://example.com/real-image.png"
+
+
+def test_media_part_standard_v1_base64_block_returns_blob():
+    item = {
+        "type": "image",
+        "base64": _REAL_PNG_B64,
+        "mime_type": "image/png",
+    }
+    part = _media_part(item)
+    assert isinstance(part, BlobPart)
+    assert part.mime_type == "image/png"
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_standard_v1_url_block_returns_uri():
+    item = {"type": "image", "url": "https://example.com/a.png"}
+    part = _media_part(item)
+    assert isinstance(part, UriPart)
+    assert part.uri == "https://example.com/a.png"
+
+
+def test_media_part_standard_block_without_mime_type_returns_blob():
+    part = _media_part({"type": "image", "base64": _REAL_PNG_B64})
+    assert isinstance(part, BlobPart)
+    assert part.mime_type is None
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_standard_v03_block_without_mime_type_returns_blob():
+    part = _media_part(
+        {"type": "image", "source_type": "base64", "data": _REAL_PNG_B64}
+    )
+    assert isinstance(part, BlobPart)
+    assert part.mime_type is None
+
+
+def test_media_part_non_dict_source_falls_through_to_standard_keys():
+    """A non-dict ``source`` must not shadow a standard payload."""
+    part = _media_part(
+        {
+            "type": "image",
+            "source": "not-a-dict",
+            "base64": _REAL_PNG_B64,
+            "mime_type": "image/png",
+        }
+    )
+    assert isinstance(part, BlobPart)
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_anthropic_source_takes_precedence_over_standard_keys():
+    """Anthropic's ``source`` is checked before the standard top-level keys."""
+    part = _media_part(
+        {
+            "type": "image",
+            "source": {"type": "url", "url": "https://example.com/from.png"},
+            "url": "https://example.com/ignored.png",
+        }
+    )
+    assert isinstance(part, UriPart)
+    assert part.uri == "https://example.com/from.png"
+
+
+def test_media_part_v03_url_source_type_does_not_fall_through_to_base64():
+    """An explicit ``source_type`` pins the variant, even when it is broken."""
+    part = _media_part(
+        {
+            "type": "image",
+            "source_type": "url",
+            "url": None,
+            "base64": _REAL_PNG_B64,
+        }
+    )
+    assert part is None
+
+
+def test_media_part_standard_v03_base64_block_returns_blob():
+    item = {
+        "type": "image",
+        "source_type": "base64",
+        "data": _REAL_PNG_B64,
+        "mime_type": "image/png",
+    }
+    part = _media_part(item)
+    assert isinstance(part, BlobPart)
+    assert part.mime_type == "image/png"
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_standard_v03_url_block_returns_uri():
+    item = {
+        "type": "image",
+        "source_type": "url",
+        "url": "https://example.com/b.png",
+    }
+    part = _media_part(item)
+    assert isinstance(part, UriPart)
+    assert part.uri == "https://example.com/b.png"
+
+
+def test_media_part_standard_block_corrupted_base64_returns_none():
+    corrupted = _REAL_PNG_B64[:10] + "@@@@" + _REAL_PNG_B64[14:]
+    assert (
+        _media_part(
+            {"type": "image", "base64": corrupted, "mime_type": "image/png"}
+        )
+        is None
+    )
+
+
+def test_media_part_standard_block_without_payload_returns_none():
+    assert _media_part({"type": "image", "mime_type": "image/png"}) is None
+
+
+@pytest.mark.parametrize(
+    "block,expected,expected_value",
+    [
+        (
+            {
+                "type": "image",
+                "base64": _REAL_PNG_B64,
+                "mime_type": "image/png",
+            },
+            BlobPart,
+            _REAL_PNG_BYTES,
+        ),
+        (
+            {"type": "image", "url": "https://example.com/a.png"},
+            UriPart,
+            "https://example.com/a.png",
+        ),
+        (
+            {
+                "type": "image",
+                "source_type": "base64",
+                "data": _REAL_PNG_B64,
+                "mime_type": "image/png",
+            },
+            BlobPart,
+            _REAL_PNG_BYTES,
+        ),
+        (
+            {
+                "type": "image",
+                "source_type": "url",
+                "url": "https://e/b.png",
+            },
+            UriPart,
+            "https://e/b.png",
+        ),
+        (
+            {"type": "image", "source_type": "id", "id": "file-123"},
+            FilePart,
+            "file-123",
+        ),
+        (
+            {"type": "image", "id": "file-456"},
+            FilePart,
+            "file-456",
+        ),
+        (
+            {
+                "type": "image",
+                "source": {"type": "file", "file_id": "file-789"},
+            },
+            FilePart,
+            "file-789",
+        ),
+    ],
+)
+def test_langchain_standard_image_blocks_are_captured(
+    block, expected, expected_value
+):
+    messages = to_input_messages([HumanMessage(content=[block])])
+    assert messages, "message dropped entirely - no parts extracted"
+    part = next(p for p in messages[0].parts if isinstance(p, expected))
+    assert part.modality == "image"
+    assert _part_payload(part) == expected_value
+
+
+@pytest.mark.parametrize(
+    "block,expected,expected_value",
+    [
+        (
+            {
+                "type": "input_image",
+                "image_url": f"data:image/png;base64,{_REAL_PNG_B64}",
+            },
+            BlobPart,
+            _REAL_PNG_BYTES,
+        ),
+        (
+            {"type": "input_image", "image_url": "https://example.com/a.png"},
+            UriPart,
+            "https://example.com/a.png",
+        ),
+        (
+            {
+                "type": "input_image",
+                "image_url": {"url": "https://example.com/a.png"},
+            },
+            UriPart,
+            "https://example.com/a.png",
+        ),
+        (
+            {"type": "input_image", "file_id": "file-123"},
+            FilePart,
+            "file-123",
+        ),
+    ],
+)
+def test_responses_api_input_image_blocks_are_captured(
+    block, expected, expected_value
+):
+    messages = to_input_messages([HumanMessage(content=[block])])
+    assert messages, "message dropped entirely - no parts extracted"
+    part = next(p for p in messages[0].parts if isinstance(p, expected))
+    assert part.modality == "image"
+    assert _part_payload(part) == expected_value
+
+
+def _part_payload(part):
+    if isinstance(part, BlobPart):
+        return part.content
+    if isinstance(part, UriPart):
+        return part.uri
+    return part.file_id
+
+
+def test_media_part_responses_api_input_image_base64_url():
+    part = _media_part(
+        {
+            "type": "input_image",
+            "image_url": f"data:image/png;base64,{_REAL_PNG_B64}",
+        }
+    )
+    assert isinstance(part, BlobPart)
+    assert part.mime_type == "image/png"
+    assert part.modality == "image"
+    assert part.content == _REAL_PNG_BYTES
+
+
+def test_media_part_responses_api_input_image_file_id_returns_file_part():
+    # Provider-hosted image: no bytes and no URL, but the reference is still
+    # worth recording.
+    part = _media_part({"type": "input_image", "file_id": "file-123"})
+    assert isinstance(part, FilePart)
+    assert part.file_id == "file-123"
+    assert part.modality == "image"
+    assert part.mime_type is None
+
+
+def test_media_part_anthropic_file_source_returns_file_part():
+    part = _media_part(
+        {
+            "type": "image",
+            "source": {
+                "type": "file",
+                "file_id": "file-789",
+                "media_type": "image/png",
+            },
+        }
+    )
+    assert isinstance(part, FilePart)
+    assert part.file_id == "file-789"
+    assert part.mime_type == "image/png"
+
+
+def test_media_part_anthropic_file_source_without_file_id_returns_none():
+    assert _media_part({"type": "image", "source": {"type": "file"}}) is None
+
+
+def test_responses_api_input_text_block_is_captured():
+    messages = to_input_messages(
+        [
+            HumanMessage(
+                content=[{"type": "input_text", "text": "what is this?"}]
+            )
+        ]
+    )
+    assert len(messages) == 1
+    parts = messages[0].parts
+    assert len(parts) == 1
+    assert isinstance(parts[0], TextPart)
+    assert parts[0].content == "what is this?"
+
+
+def test_responses_api_output_text_block_is_captured():
+    # langchain-openai accepts "output_text" on an assistant turn fed back in
+    # as request input.
+    messages = to_input_messages(
+        [AIMessage(content=[{"type": "output_text", "text": "the answer"}])]
+    )
+    assert len(messages) == 1
+    assert messages[0].role == "assistant"
+    parts = messages[0].parts
+    assert len(parts) == 1
+    assert isinstance(parts[0], TextPart)
+    assert parts[0].content == "the answer"
+
+
+def test_message_survives_unconvertible_image_block():
+    # An image block with no bytes, url, or file id has nothing to record.
+    messages = to_input_messages(
+        [HumanMessage(content=[{"type": "image", "detail": "high"}])]
+    )
+    assert messages, "message dropped entirely"
+    assert messages[0].role == "user"
+    assert messages[0].parts == []
+
+
+def test_text_kept_when_image_block_is_unconvertible():
+    messages = to_input_messages(
+        [
+            HumanMessage(
+                content=[
+                    {"type": "input_text", "text": "what is in this image?"},
+                    {"type": "input_image", "detail": "high"},
+                ]
+            )
+        ]
+    )
+    assert messages, "message dropped entirely"
+    assert any(isinstance(p, TextPart) for p in messages[0].parts)
+
+
+def test_message_with_only_unknown_blocks_is_kept():
+    messages = to_input_messages(
+        [HumanMessage(content=[{"type": "input_file", "file_id": "file-1"}])]
+    )
+    assert messages
+    assert messages[0].parts == []
+
+
+def test_empty_message_is_still_dropped():
+    assert to_input_messages([HumanMessage(content="")]) == []
+    assert to_input_messages([HumanMessage(content=[])]) == []
+
+
+@pytest.mark.parametrize("content", [[""], ["", ""], [{}], ["", {}]])
+def test_message_of_blank_blocks_is_dropped(content):
+    # Blank blocks are empty content, not content we failed to convert.
+    assert to_input_messages([HumanMessage(content=content)]) == []
+
+
+def test_output_message_survives_unconvertible_blocks():
+    # A dropped output message would also lose its finish_reason.
+    messages = to_output_messages(
+        [AIMessage(content=[{"type": "input_file", "file_id": "file-1"}])],
+        finish_reason="stop",
+    )
+    assert messages
+    assert messages[0].parts == []
+    assert messages[0].finish_reason == "stop"
+
+
+def test_empty_output_message_is_still_dropped():
+    assert to_output_messages([AIMessage(content="")]) == []
+
+
+def test_to_input_messages_extracts_image_part():
+    image_url = "data:image/jpeg;base64,QUJD"
+    content = [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": image_url}},
+    ]
+    messages = to_input_messages([HumanMessage(content=content)])
+    assert len(messages) == 1
+    parts = messages[0].parts
+
+    assert any(isinstance(p, BlobPart) for p in parts)
+    blob = next(p for p in parts if isinstance(p, BlobPart))
+    assert blob.mime_type == "image/jpeg"
+    assert blob.content == b"ABC"
+
+
+def test_on_chat_model_start_skips_input_messages_when_content_disabled():
+    """Gating happens in the callback handler, not inside the utils."""
+    run_id = _run_id()
+    handler, telemetry, llm_inv = _make_handler_with_llm_invocation(run_id)
+    telemetry.should_capture_content.return_value = False
+
+    content = [
+        {"type": "text", "text": "What's in this image?"},
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_REAL_PNG_B64}"},
+        },
+    ]
+    handler.on_chat_model_start(
+        serialized={},
+        messages=[[HumanMessage(content=content)]],
+        run_id=_run_id(),
+        invocation_params={"model_name": "gpt-4o"},
+    )
+
+    assert llm_inv.input_messages == []
+
+
+def test_on_chat_model_start_captures_input_messages_when_content_enabled():
+    run_id = _run_id()
+    handler, telemetry, llm_inv = _make_handler_with_llm_invocation(run_id)
+    telemetry.should_capture_content.return_value = True
+
+    content = [
+        {"type": "text", "text": "What's in this image?"},
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_REAL_PNG_B64}"},
+        },
+    ]
+    handler.on_chat_model_start(
+        serialized={},
+        messages=[[HumanMessage(content=content)]],
+        run_id=_run_id(),
+        invocation_params={"model_name": "gpt-4o"},
+    )
+
+    parts = llm_inv.input_messages[0].parts
+    assert any(isinstance(p, TextPart) for p in parts)
+    blob = next(p for p in parts if isinstance(p, BlobPart))
+    assert blob.content == _REAL_PNG_BYTES

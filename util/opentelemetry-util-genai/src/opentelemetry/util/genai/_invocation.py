@@ -12,6 +12,8 @@ from dataclasses import asdict
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from typing_extensions import Self
+
 from opentelemetry._logs import Logger, LogRecord
 from opentelemetry.context import Context, attach, detach
 from opentelemetry.semconv._incubating.attributes import (
@@ -121,6 +123,13 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         """Return {token_type: count} for token histogram recording."""
         return {}
 
+    def record_stream_chunk(self) -> None:
+        """Mark the request as streamed and record one output chunk arriving."""
+        if self._context_token is None:
+            return
+        self._request_stream = True
+        self._on_stream_chunk(timeit.default_timer())
+
     def _on_stream_chunk(self, chunk_at: float) -> None:
         """Record streaming timing for one output chunk as it arrives.
 
@@ -211,7 +220,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             error = Error.from_exception(error, self._error_type_resolver)
         self._finish(error)
 
-    def __enter__(self) -> GenAIInvocation:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(

@@ -17,6 +17,7 @@ from opentelemetry.sdk.trace.sampling import Decision, SamplingResult
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
+from opentelemetry.test.test_base import TestBase
 from opentelemetry.trace import INVALID_SPAN, SpanKind
 from opentelemetry.trace.status import StatusCode
 from opentelemetry.util.genai.handler import TelemetryHandler
@@ -25,7 +26,7 @@ from opentelemetry.util.genai.types import (
     Error,
     InputMessage,
     OutputMessage,
-    Text,
+    TextPart,
 )
 
 
@@ -71,6 +72,23 @@ class TelemetryHandlerWorkflowTest(_WorkflowTestBase):
         spans = self._get_finished_spans()
         self.assertEqual(len(spans), 1)
         self.assertEqual(spans[0].name, "invoke_workflow")
+
+    def test_workflow_conversation_id(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.conversation_id = "conv-456"
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(
+            spans[0].attributes[GenAI.GEN_AI_CONVERSATION_ID], "conv-456"
+        )
+
+    def test_workflow_without_conversation_id(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertNotIn(GenAI.GEN_AI_CONVERSATION_ID, spans[0].attributes)
 
     def test_start_workflow_span_kind_is_internal(self) -> None:
         invocation = self.handler.workflow(name="wf")
@@ -138,6 +156,16 @@ class TelemetryHandlerWorkflowTest(_WorkflowTestBase):
         invocation.stop()
         spans = self._get_finished_spans()
         self.assertEqual(len(spans), 1)
+
+    def test_stop_workflow_sets_conversation_id(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.conversation_id = "wf-conv-99"
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(
+            spans[0].attributes[GenAI.GEN_AI_CONVERSATION_ID], "wf-conv-99"
+        )
 
     # ------------------------------------------------------------------
     # fail_workflow
@@ -273,9 +301,11 @@ class TelemetryHandlerWorkflowSamplingTest(_WorkflowTestBase):
         self.assertEqual(spans[0].status.status_code, StatusCode.UNSET)
 
     def test_workflow_context_manager_with_messages(self) -> None:
-        inp = InputMessage(role="user", parts=[Text(content="hello")])
+        inp = InputMessage(role="user", parts=[TextPart(content="hello")])
         out = OutputMessage(
-            role="assistant", parts=[Text(content="hi")], finish_reason="stop"
+            role="assistant",
+            parts=[TextPart(content="hi")],
+            finish_reason="stop",
         )
         with self.handler.workflow("msg_wf") as inv:
             inv.input_messages = [inp]
@@ -287,3 +317,39 @@ class TelemetryHandlerWorkflowSamplingTest(_WorkflowTestBase):
             spans[0].attributes[GenAI.GEN_AI_OPERATION_NAME],
             "invoke_workflow",
         )
+
+
+class TestWorkflowInvocationMetrics(TestBase):
+    def _harvest_metrics(self):
+        metrics = self.get_sorted_metrics()
+        metrics_by_name = {}
+        for metric in metrics or []:
+            points = metric.data.data_points or []
+            metrics_by_name.setdefault(metric.name, []).extend(points)
+        return metrics_by_name
+
+    def test_workflow_records_duration(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        with patch("timeit.default_timer", return_value=1000.0):
+            invocation = handler.workflow(name="test-workflow")
+
+        with patch("timeit.default_timer", return_value=1002.0):
+            invocation.stop()
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.invoke_workflow.duration", metrics)
+        duration_points = metrics["gen_ai.invoke_workflow.duration"]
+        self.assertEqual(len(duration_points), 1)
+        duration_point = duration_points[0]
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_OPERATION_NAME],
+            "invoke_workflow",
+        )
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_WORKFLOW_NAME],
+            "test-workflow",
+        )
+        self.assertAlmostEqual(duration_point.sum, 2.0, places=3)

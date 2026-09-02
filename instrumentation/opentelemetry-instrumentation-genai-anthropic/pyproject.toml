@@ -28,11 +28,11 @@ dependencies = [
   "opentelemetry-api ~= 1.43",
   "opentelemetry-instrumentation >= 0.64b0, <1",
   "opentelemetry-semantic-conventions >= 0.64b0, <1",
-  "opentelemetry-util-genai >= 1.1b0.dev, <2",
+  "opentelemetry-util-genai >= 1.2b0.dev, <2",
 ]
 
 [project.optional-dependencies]
-instruments = ["anthropic >= 0.51.0"]
+instruments = ["anthropic >= 0.51.0, < 2"]
 
 [project.entry-points.opentelemetry_instrumentor]
 anthropic = "opentelemetry.instrumentation.genai.anthropic:AnthropicInstrumentor"

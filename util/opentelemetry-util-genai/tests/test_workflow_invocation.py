@@ -13,7 +13,7 @@ from opentelemetry.util.genai.handler import TelemetryHandler
 from opentelemetry.util.genai.types import (
     InputMessage,
     OutputMessage,
-    Text,
+    TextPart,
 )
 
 
@@ -42,7 +42,7 @@ class TestWorkflowInvocation(unittest.TestCase):
         assert invocation._name == "customer_support_pipeline"
 
     def test_with_input_messages(self):
-        msg = InputMessage(role="user", parts=[Text(content="hello")])
+        msg = InputMessage(role="user", parts=[TextPart(content="hello")])
         invocation = self.handler.workflow(name="test")
         invocation.input_messages = [msg]
         invocation.stop()
@@ -51,7 +51,9 @@ class TestWorkflowInvocation(unittest.TestCase):
 
     def test_with_output_messages(self):
         msg = OutputMessage(
-            role="assistant", parts=[Text(content="hi")], finish_reason="stop"
+            role="assistant",
+            parts=[TextPart(content="hi")],
+            finish_reason="stop",
         )
         invocation = self.handler.workflow(name="test")
         invocation.output_messages = [msg]
@@ -85,10 +87,10 @@ class TestWorkflowInvocation(unittest.TestCase):
         inv2.stop()
 
     def test_full_construction(self):
-        inp = InputMessage(role="user", parts=[Text(content="query")])
+        inp = InputMessage(role="user", parts=[TextPart(content="query")])
         out = OutputMessage(
             role="assistant",
-            parts=[Text(content="answer")],
+            parts=[TextPart(content="answer")],
             finish_reason="stop",
         )
         invocation = self.handler.workflow(name="my_workflow")
@@ -99,3 +101,15 @@ class TestWorkflowInvocation(unittest.TestCase):
         assert len(invocation.input_messages) == 1
         assert len(invocation.output_messages) == 1
         assert invocation.output_messages[0].parts[0].content == "answer"
+
+    def test_with_conversation_id(self):
+        from opentelemetry.semconv._incubating.attributes import (
+            gen_ai_attributes as GenAI,
+        )
+
+        invocation = self.handler.workflow(name="test")
+        invocation.conversation_id = "conv-123"
+        invocation.stop()
+        spans = self.span_exporter.get_finished_spans()
+        assert spans[0].attributes is not None
+        assert spans[0].attributes[GenAI.GEN_AI_CONVERSATION_ID] == "conv-123"

@@ -12,6 +12,7 @@ on:
         - opentelemetry-instrumentation-genai-langchain
         - opentelemetry-instrumentation-genai-openai-agents
         - opentelemetry-instrumentation-genai-openai
+        - opentelemetry-instrumentation-genai-portkey
         - opentelemetry-instrumentation-genai-qwen-agent
         - opentelemetry-util-genai
         description: >
@@ -32,9 +33,11 @@ jobs:
   prepare:
     permissions:
       contents: write
-    runs-on: ubuntu-latest
+    runs-on: cncf-ubuntu-2-8-x86
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true # zizmor: ignore[artipacked] a later step pushes the prepared release branch
 
       - name: Verify branch
         run: |
@@ -78,7 +81,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
       - name: Prepare selected packages for release
         run: |
@@ -86,7 +89,9 @@ jobs:
             [[ -z "$package" ]] && continue
             echo "Preparing ${package}"
             ./scripts/prepare_package_for_release.sh "$package"
-          done <<< "${{ steps.packages.outputs.packages }}"
+          done <<< "${STEPS_PACKAGES_OUTPUTS_PACKAGES}"
+        env:
+          STEPS_PACKAGES_OUTPUTS_PACKAGES: ${{ steps.packages.outputs.packages }}
 
       - name: Configure CLA-approved git bot
         run: .github/scripts/use-cla-approved-github-bot.sh
@@ -96,6 +101,7 @@ jobs:
         with:
           client-id: ${{ vars.OTELBOT_CLIENT_ID }}
           private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+          permission-pull-requests: write
 
       - name: Create pull request
         env:
