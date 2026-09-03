@@ -84,11 +84,11 @@ class LangChainInstrumentor(BaseInstrumentor):
             "BaseCallbackManager.__init__",
             _BaseCallbackManagerInitWrapper(otel_callback_handler),
         )
-        self._instrument_agent_entry_points()
+        self._instrument_graph_entry_points()
 
     @staticmethod
-    def _instrument_agent_entry_points() -> None:
-        """Recover the create_agent provenance the callback metadata does not carry."""
+    def _instrument_graph_entry_points() -> None:
+        """Recover graph provenance the callback metadata does not carry."""
         for method, wrapper in (
             ("Pregel.stream", wrap_stream),
             ("Pregel.astream", wrap_astream),

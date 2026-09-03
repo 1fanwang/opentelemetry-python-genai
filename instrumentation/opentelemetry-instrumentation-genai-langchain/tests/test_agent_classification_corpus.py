@@ -82,7 +82,7 @@ def test_uninstrument_restores_pregel_when_prebuilt_is_missing(
     langgraph_pregel = import_module("langgraph.pregel")
     original_stream = langgraph_pregel.Pregel.stream
     original_astream = langgraph_pregel.Pregel.astream
-    LangChainInstrumentor()._instrument_agent_entry_points()
+    LangChainInstrumentor()._instrument_graph_entry_points()
     monkeypatch.setitem(sys.modules, "langgraph.prebuilt", None)
 
     LangChainInstrumentor()._uninstrument()

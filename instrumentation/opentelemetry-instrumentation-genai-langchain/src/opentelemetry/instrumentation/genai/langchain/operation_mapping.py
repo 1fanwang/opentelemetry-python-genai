@@ -153,10 +153,21 @@ def _has_agent_signals(
         and str(metadata_name).lower() in ancestor_agent_names
     )
     return bool(
-        metadata.get(_META_AGENT_SPAN)
-        or (metadata_name and not inherited_name)
+        (metadata_name and not inherited_name)
         or metadata.get(_META_AGENT_TYPE)
     )
+
+
+def _has_explicit_agent_override(
+    metadata: dict[str, Any] | None,
+) -> bool:
+    return bool(metadata and metadata.get(_META_AGENT_SPAN))
+
+
+def _has_explicit_workflow_override(
+    metadata: dict[str, Any] | None,
+) -> bool:
+    return bool(metadata and metadata.get(_META_WORKFLOW_SPAN))
 
 
 def _looks_like_workflow(
@@ -167,10 +178,6 @@ def _looks_like_workflow(
     """Return True if the chain looks like a top-level workflow/graph."""
     if parent_run_id is not None:
         return False
-
-    # An explicit workflow override is authoritative.
-    if metadata and metadata.get(_META_WORKFLOW_SPAN):
-        return True
 
     # Heuristic: check for LangGraph identifier in the serialized repr.
     if serialized:
@@ -223,6 +230,7 @@ def _should_ignore_chain(
             metadata.get(_META_AGENT_SPAN) is False
             and not metadata.get(_META_AGENT_NAME)
             and not metadata.get(_META_AGENT_TYPE)
+            and not metadata.get(_META_WORKFLOW_SPAN)
         ):
             return True
 
@@ -247,6 +255,7 @@ def classify_chain_run(
     declared_agent_name: str | None = None,
     announced_agent: bool = False,
     ancestor_agent_names: set[str] | None = None,
+    announced_workflow: bool = False,
 ) -> str | None:
     """Classify a ``on_chain_start`` callback into a semconv operation.
 
@@ -276,13 +285,25 @@ def classify_chain_run(
     if (
         announced_agent
         or declared_agent_name
-        or _has_agent_signals(metadata, ancestor_agent_names)
+        or _has_explicit_agent_override(metadata)
     ):
         return OperationName.INVOKE_AGENT
 
-    # 3. Workflow / orchestration detection.
-    if _looks_like_workflow(serialized, metadata, parent_run_id):
+    if _has_explicit_workflow_override(metadata):
         return OperationName.INVOKE_WORKFLOW
 
-    # 4. Default: suppress unclassified chains.
+    # 3. A nested graph announcement is stronger than inherited agent metadata.
+    if announced_workflow and parent_run_id is not None:
+        return OperationName.INVOKE_WORKFLOW
+
+    if _has_agent_signals(metadata, ancestor_agent_names):
+        return OperationName.INVOKE_AGENT
+
+    # 4. Workflow / orchestration detection.
+    if announced_workflow or _looks_like_workflow(
+        serialized, metadata, parent_run_id
+    ):
+        return OperationName.INVOKE_WORKFLOW
+
+    # 5. Default: suppress unclassified chains.
     return None
