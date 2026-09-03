@@ -439,13 +439,13 @@ def _create_instrumented_interactions_create(
             telemetry_handler, instance, kwargs
         )
 
-        if kwargs.get("stream", False):
-            return InteractionsStreamWrapper(
-                wrapped(*args, **kwargs),
-                invocation,
-                telemetry_handler,
-            )
         try:
+            if kwargs.get("stream", False):
+                return InteractionsStreamWrapper(
+                    wrapped(*args, **kwargs),
+                    invocation,
+                    telemetry_handler,
+                )
             response = wrapped(*args, **kwargs)
             _apply_interaction_response_attributes(
                 response, invocation, telemetry_handler
@@ -480,13 +480,13 @@ def _create_instrumented_async_interactions_create(
             telemetry_handler, instance, kwargs
         )
 
-        if kwargs.get("stream", False):
-            return AsyncInteractionsStreamWrapper(
-                await wrapped(*args, **kwargs),
-                invocation,
-                telemetry_handler,
-            )
         try:
+            if kwargs.get("stream", False):
+                return AsyncInteractionsStreamWrapper(
+                    await wrapped(*args, **kwargs),
+                    invocation,
+                    telemetry_handler,
+                )
             response = cast(
                 Interaction,
                 await wrapped(*args, **kwargs),
