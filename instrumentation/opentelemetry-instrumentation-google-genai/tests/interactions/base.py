@@ -217,7 +217,11 @@ class TestCase(CommonTestCaseBase):
                 input="Does this work?",
                 stream=True,
             )
+        self.otel.assert_has_span_named("interactions.create gemini-2.5-flash")
         span = self.otel.get_span_named("interactions.create gemini-2.5-flash")
+        self.otel.assert_has_event_named(
+            "gen_ai.client.inference.operation.details"
+        )
         event = self.otel.get_event_named(
             "gen_ai.client.inference.operation.details"
         )
