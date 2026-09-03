@@ -397,7 +397,7 @@ def get_output_messages_from_response(
                             ),
                         )
                     ],
-                    finish_reason="tool_calls",
+                    finish_reason="tool_call",
                 )
             )
             continue

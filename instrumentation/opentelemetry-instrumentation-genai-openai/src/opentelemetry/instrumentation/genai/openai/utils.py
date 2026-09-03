@@ -22,6 +22,7 @@ from opentelemetry.util.genai.invocation import (
     InferenceInvocation,
 )
 from opentelemetry.util.genai.types import (
+    FinishReason,
     FunctionToolDefinition,
     InputMessage,
     OutputMessage,
@@ -267,6 +268,12 @@ def _prepare_tool_definitions(tools) -> list[ToolDefinition] | None:
     return definitions
 
 
+def map_finish_reason(finish_reason: str | None) -> FinishReason | str:
+    if finish_reason in ("tool_calls", "function_call"):
+        return "tool_call"
+    return finish_reason or "error"
+
+
 def _prepare_output_messages(choices) -> list[OutputMessage]:
     output_messages = []
     for choice in choices:
@@ -280,7 +287,7 @@ def _prepare_output_messages(choices) -> list[OutputMessage]:
                 parts.append(TextPart(content=str(content)))
 
             message = OutputMessage(
-                finish_reason=choice.finish_reason or "error",
+                finish_reason=map_finish_reason(choice.finish_reason),
                 role=(
                     choice.message.role
                     if choice.message and choice.message.role
