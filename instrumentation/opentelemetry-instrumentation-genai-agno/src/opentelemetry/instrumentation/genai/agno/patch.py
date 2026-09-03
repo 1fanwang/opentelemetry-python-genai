@@ -188,8 +188,6 @@ def _set_tool_invocation_output(
     result: Any,
     capture_content: bool,
 ) -> None:
-    if capture_content and result is not None:
-        invocation.tool_result = _extract_output_content(result)
     if getattr(result, "status", None) == "failure":
         error = getattr(result, "error", None)
         invocation.fail(
@@ -198,6 +196,9 @@ def _set_tool_invocation_output(
                 message=str(error) if error else None,
             )
         )
+        return
+    if capture_content and result is not None:
+        invocation.tool_result = _extract_output_content(result)
 
 
 def _set_invocation_input(

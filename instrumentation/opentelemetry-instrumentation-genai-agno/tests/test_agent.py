@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from agno.agent import Agent
@@ -25,6 +26,9 @@ from opentelemetry.semconv.attributes import (
     error_attributes as ErrorAttributes,
 )
 from opentelemetry.trace.status import StatusCode
+from opentelemetry.instrumentation.genai.agno.patch import (
+    _set_tool_invocation_output,
+)
 
 
 def test_agent_run_spans(
@@ -182,10 +186,25 @@ def test_tool_call_failure_spans(
     assert len(spans) == 1
     span = spans[0]
     assert span.status.status_code == StatusCode.ERROR
+    assert span.status.description == "tool failed"
     assert (
         span.attributes.get(ErrorAttributes.ERROR_TYPE)
         == ErrorTypeValues.OTHER.value
     )
+
+
+def test_failed_tool_result_is_not_captured() -> None:
+    invocation = MagicMock()
+    invocation.tool_result = None
+
+    _set_tool_invocation_output(
+        invocation,
+        SimpleNamespace(status="failure", error="tool failed"),
+        capture_content=True,
+    )
+
+    assert invocation.tool_result is None
+    invocation.fail.assert_called_once()
 
 
 def test_team_run_spans(
