@@ -18,6 +18,12 @@ from tests.mock_model import MockModel
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
+from opentelemetry.semconv._incubating.attributes.error_attributes import (
+    ErrorTypeValues,
+)
+from opentelemetry.semconv.attributes import (
+    error_attributes as ErrorAttributes,
+)
 from opentelemetry.trace.status import StatusCode
 
 
@@ -152,6 +158,31 @@ def test_tool_call_aexecute_spans(
     )
     assert (
         span.attributes.get(GenAIAttributes.GEN_AI_TOOL_CALL_ID) == "call-456"
+    )
+
+
+@pytest.mark.parametrize("async_execute", [False, True])
+def test_tool_call_failure_spans(
+    instrument_agno,
+    span_exporter,
+    async_execute: bool,
+) -> None:
+    def failing_tool() -> None:
+        raise ValueError("tool failed")
+
+    func_call = FunctionCall(function=Function.from_callable(failing_tool))
+    result = (
+        asyncio.run(func_call.aexecute())
+        if async_execute
+        else func_call.execute()
+    )
+
+    assert result.status == "failure"
+    span = span_exporter.get_finished_spans()[0]
+    assert span.status.status_code == StatusCode.ERROR
+    assert (
+        span.attributes.get(ErrorAttributes.ERROR_TYPE)
+        == ErrorTypeValues.OTHER.value
     )
 
 

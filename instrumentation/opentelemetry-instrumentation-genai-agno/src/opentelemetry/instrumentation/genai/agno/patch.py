@@ -23,6 +23,9 @@ from opentelemetry.instrumentation.genai.agno.utils import (
     prepare_tool_definitions,
 )
 from opentelemetry.instrumentation.utils import unwrap
+from opentelemetry.semconv._incubating.attributes.error_attributes import (
+    ErrorTypeValues,
+)
 from opentelemetry.util.genai.handler import TelemetryHandler
 from opentelemetry.util.genai.invocation import (
     AgentInvocation,
@@ -30,6 +33,7 @@ from opentelemetry.util.genai.invocation import (
     WorkflowInvocation,
 )
 from opentelemetry.util.genai.types import (
+    Error,
     InputMessage,
     OutputMessage,
     TextPart,
@@ -180,12 +184,20 @@ def _set_tool_invocation_input(
 
 
 def _set_tool_invocation_output(
-    invocation: Any,
+    invocation: ToolInvocation,
     result: Any,
     capture_content: bool,
 ) -> None:
     if capture_content and result is not None:
         invocation.tool_result = _extract_output_content(result)
+    if getattr(result, "status", None) == "failure":
+        error = getattr(result, "error", None)
+        invocation.fail(
+            Error(
+                type=ErrorTypeValues.OTHER.value,
+                message=str(error) if error else None,
+            )
+        )
 
 
 def _set_invocation_input(
