@@ -3,6 +3,8 @@
 
 """Tests for the ClaudeAgentSDKInstrumentor class."""
 
+import claude_agent_sdk
+
 from opentelemetry.instrumentation.genai.claude_agent_sdk import (
     ClaudeAgentSDKInstrumentor,
 )
@@ -30,6 +32,7 @@ def test_instrument_uninstrument_cycle(
 ):
     """Test that instrument() and uninstrument() can be called multiple times."""
     instrumentor = ClaudeAgentSDKInstrumentor()
+    original_query = claude_agent_sdk.query
 
     # First instrumentation
     instrumentor.instrument(
@@ -37,9 +40,11 @@ def test_instrument_uninstrument_cycle(
         logger_provider=logger_provider,
         meter_provider=meter_provider,
     )
+    assert claude_agent_sdk.query is not original_query
 
     # First uninstrumentation
     instrumentor.uninstrument()
+    assert claude_agent_sdk.query is original_query
 
     # Second instrumentation (should work)
     instrumentor.instrument(
@@ -50,6 +55,7 @@ def test_instrument_uninstrument_cycle(
 
     # Second uninstrumentation
     instrumentor.uninstrument()
+    assert claude_agent_sdk.query is original_query
 
 
 def test_multiple_instrumentation_calls(

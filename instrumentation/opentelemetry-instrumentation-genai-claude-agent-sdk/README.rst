@@ -6,8 +6,9 @@ OpenTelemetry Claude Agent SDK Instrumentation
 .. |pypi| image:: https://badge.fury.io/py/opentelemetry-instrumentation-genai-claude-agent-sdk.svg
    :target: https://pypi.org/project/opentelemetry-instrumentation-genai-claude-agent-sdk/
 
-This library allows tracing LLM requests made by the
-`Claude Agent SDK <https://github.com/anthropics/claude-agent-sdk-python>`_.
+This library traces one-shot ``query()`` calls made by the
+`Claude Agent SDK <https://github.com/anthropics/claude-agent-sdk-python>`_
+as ``invoke_agent`` spans. Claude Code's native telemetry is unchanged.
 
 Installation
 ------------
@@ -30,10 +31,11 @@ Check out the `manual example <examples/manual>`_ for more details.
 .. code-block:: python
 
     from opentelemetry.instrumentation.genai.claude_agent_sdk import ClaudeAgentSDKInstrumentor
-    from claude_agent_sdk import ClaudeAgentOptions, AgentDefinition, AssistantMessage, TextBlock, query
 
     # Instrument Claude Agent SDK
     ClaudeAgentSDKInstrumentor().instrument()
+
+    from claude_agent_sdk import ClaudeAgentOptions, AgentDefinition, AssistantMessage, TextBlock, query
 
     # Use Claude Agent SDK as normal
     import anyio
@@ -60,22 +62,6 @@ Check out the `manual example <examples/manual>`_ for more details.
                         print(block.text)
 
     anyio.run(main)
-
-
-Configuration
--------------
-
-Capture Message Content
-***********************
-
-By default, prompts and completions are not captured. To capture message content, set the
-environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to one of
-``NO_CONTENT``, ``SPAN_ONLY``, ``EVENT_ONLY``, or ``SPAN_AND_EVENT``:
-
-::
-
-    export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_AND_EVENT
-
 
 References
 ----------
