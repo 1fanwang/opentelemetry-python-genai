@@ -362,7 +362,7 @@ def test_create_agent_internal_nodes_are_not_agents(
     assert agent_span.attributes["gen_ai.agent.name"] == "agent"
     tool_span = spans[0]
     assert tool_span.parent.span_id == agent_span.context.span_id
-    assert "gen_ai.agent.name" not in tool_span.attributes
+    assert tool_span.attributes["gen_ai.agent.name"] == "agent"
 
 
 def test_create_agent_with_configured_agent_name_emits_one_agent() -> None:

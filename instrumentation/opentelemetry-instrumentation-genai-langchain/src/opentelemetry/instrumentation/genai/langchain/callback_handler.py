@@ -619,7 +619,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 arguments = json.loads(input_str)
             except (json.JSONDecodeError, ValueError):
                 arguments = input_str
-        nearest_agent = self._find_nearest_agent(parent_run_id)
+        nearest_agent, _ = self._find_agent_context(parent_run_id)
         agent_name = nearest_agent.agent_name if nearest_agent else None
 
         tool_invocation = self._telemetry_handler.tool(

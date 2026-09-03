@@ -299,7 +299,7 @@ class TestClassifyChainRun:
         assert inner_agent.parent.span_id == tool_span.context.span_id
         assert inner_agent.attributes["gen_ai.agent.name"] == "inner_agent"
         assert outer_agent.attributes["gen_ai.agent.name"] == "outer_agent"
-        assert "gen_ai.agent.name" not in tool_span.attributes
+        assert tool_span.attributes["gen_ai.agent.name"] == "outer_agent"
 
     def test_unnamed_nested_agent_has_no_placeholder_name(
         self, span_exporter, start_instrumentation
@@ -344,7 +344,7 @@ class TestClassifyChainRun:
         assert inner_agent.parent.span_id == tool_span.context.span_id
         assert "gen_ai.agent.name" not in inner_agent.attributes
         assert outer_agent.attributes["gen_ai.agent.name"] == "outer_agent"
-        assert "gen_ai.agent.name" not in tool_span.attributes
+        assert tool_span.attributes["gen_ai.agent.name"] == "outer_agent"
 
     def test_explicit_otel_agent_metadata_overrides_node_inference(self):
         result = classify_chain_run(
