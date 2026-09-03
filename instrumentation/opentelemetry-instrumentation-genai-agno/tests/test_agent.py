@@ -178,7 +178,9 @@ def test_tool_call_failure_spans(
     )
 
     assert result.status == "failure"
-    span = span_exporter.get_finished_spans()[0]
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
     assert span.status.status_code == StatusCode.ERROR
     assert (
         span.attributes.get(ErrorAttributes.ERROR_TYPE)
