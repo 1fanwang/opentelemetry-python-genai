@@ -16,6 +16,9 @@ from agno.team import Team
 from agno.tools.function import Function, FunctionCall
 from tests.mock_model import MockModel
 
+from opentelemetry.instrumentation.genai.agno.patch import (
+    _set_tool_invocation_output,
+)
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
@@ -26,9 +29,6 @@ from opentelemetry.semconv.attributes import (
     error_attributes as ErrorAttributes,
 )
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.instrumentation.genai.agno.patch import (
-    _set_tool_invocation_output,
-)
 
 
 def test_agent_run_spans(
@@ -174,7 +174,9 @@ def test_tool_call_failure_spans(
     def failing_tool() -> None:
         raise ValueError("tool failed")
 
-    func_call = FunctionCall(function=Function.from_callable(failing_tool))
+    func_call = FunctionCall(
+        function=Function.from_callable(failing_tool), arguments={}
+    )
     result = (
         asyncio.run(func_call.aexecute())
         if async_execute
