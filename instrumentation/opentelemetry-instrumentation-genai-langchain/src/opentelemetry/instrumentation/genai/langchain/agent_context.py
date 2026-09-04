@@ -1,17 +1,6 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Identify ``create_agent`` graph invocations from outside the callback API.
-
-LangChain callbacks cannot tell a nested ``create_agent`` root apart from any
-other named runnable invoked inside a tool: the enclosing agent's ``config`` is
-merged over the inner agent's own, so ``lc_agent_name`` and ``ls_integration``
-in the *callback* metadata describe the outer agent. The compiled graph's own
-bound config is never shadowed, so this module reads the marker there and has
-each graph entry point announce itself on a context stack that the callback
-handler consults when the root run starts.
-"""
-
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -27,27 +16,19 @@ _REACT_AGENT_MODULE = "langgraph.prebuilt.chat_agent_executor"
 
 
 @dataclass
-class _PendingAgent:
-    """An agent graph that has started running but whose root run is not seen yet."""
-
+class _PendingGraph:
     name: str | None
+    is_agent: bool
     claimed: bool = False
 
 
-_pending: ContextVar[tuple[_PendingAgent, ...]] = ContextVar(
-    "otel_genai_pending_agents", default=()
+_pending: ContextVar[tuple[_PendingGraph, ...]] = ContextVar(
+    "otel_genai_pending_graphs", default=()
 )
 
 
-def claim_agent() -> _PendingAgent | None:
-    """Return the announcement if this run is a create_agent graph root.
-
-    The announcement is made as the graph starts, so the first chain run to see
-    it is the graph's root. Only the innermost announcement is claimable, and
-    only once, so internal nodes fall through to metadata-based classification.
-    The root run's own name is not checked - ``with_config(run_name=...)``
-    renames it without making it any less of an agent.
-    """
+def claim_graph() -> _PendingGraph | None:
+    """Return the announcement for the next graph root callback."""
     pending = _pending.get()
     if not pending:
         return None
@@ -98,14 +79,18 @@ def _agent_name(graph: Any) -> tuple[bool, str | None]:
     return False, None
 
 
-def _push(name: str | None) -> _PendingAgent:
-    """Announce ``name`` as the innermost running agent."""
-    entry = _PendingAgent(name)
+def _workflow_name(graph: Any) -> str | None:
+    name = getattr(graph, "name", None)
+    return str(name) if name else None
+
+
+def _push(name: str | None, is_agent: bool) -> _PendingGraph:
+    entry = _PendingGraph(name=name, is_agent=is_agent)
     _pending.set(_pending.get() + (entry,))
     return entry
 
 
-def _pop(entry: _PendingAgent) -> None:
+def _pop(entry: _PendingGraph) -> None:
     """Withdraw ``entry``, tolerating a stack the caller's context no longer owns."""
     pending = _pending.get()
     if pending and pending[-1] is entry:
@@ -118,14 +103,14 @@ def wrap_stream(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> Any:
-    """Announce an agent graph for the duration of ``Pregel.stream``.
+    """Announce a graph for the duration of ``Pregel.stream``.
 
     ``Pregel.invoke`` runs through ``stream``, so this covers both entry points.
     """
     is_agent, name = _agent_name(instance)
     if not is_agent:
-        return wrapped(*args, **kwargs)
-    return _announce_at_stream_start(wrapped(*args, **kwargs), name)
+        name = _workflow_name(instance)
+    return _announce_at_stream_start(wrapped(*args, **kwargs), name, is_agent)
 
 
 def wrap_astream(
@@ -134,18 +119,20 @@ def wrap_astream(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> Any:
-    """Announce an agent graph for the duration of ``Pregel.astream``.
+    """Announce a graph for the duration of ``Pregel.astream``.
 
     ``Pregel.ainvoke`` runs through ``astream``, so this covers both entry points.
     """
     is_agent, name = _agent_name(instance)
     if not is_agent:
-        return wrapped(*args, **kwargs)
-    return _announce_at_astream_start(wrapped(*args, **kwargs), name)
+        name = _workflow_name(instance)
+    return _announce_at_astream_start(wrapped(*args, **kwargs), name, is_agent)
 
 
 def _announce_at_stream_start(
-    stream: Iterator[Any], name: str | None
+    stream: Iterator[Any],
+    name: str | None,
+    is_agent: bool,
 ) -> Iterator[Any]:
     """Announce ``name`` for the first step of ``stream`` only.
 
@@ -158,7 +145,7 @@ def _announce_at_stream_start(
     # A generator body runs in the consumer's context, so the announcement lands
     # where the callbacks fire - on the first ``next()``, not here.
     iterator = iter(stream)
-    entry = _push(name)
+    entry = _push(name, is_agent)
     try:
         first = next(iterator)
     except StopIteration:
@@ -170,11 +157,13 @@ def _announce_at_stream_start(
 
 
 async def _announce_at_astream_start(
-    stream: AsyncIterator[Any], name: str | None
+    stream: AsyncIterator[Any],
+    name: str | None,
+    is_agent: bool,
 ) -> AsyncIterator[Any]:
     """Announce ``name`` for the first step of ``stream`` only."""
     iterator = stream.__aiter__()
-    entry = _push(name)
+    entry = _push(name, is_agent)
     try:
         first = await iterator.__anext__()
     except StopAsyncIteration:
