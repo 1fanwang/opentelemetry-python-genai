@@ -1,6 +1,13 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
+"""Identify graph roots outside the LangChain callback API.
+
+Callback metadata cannot distinguish a nested graph root from its internal
+runnables because parent config is inherited. Graph entry points announce the
+root on a context stack so only the matching callback can claim it.
+"""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -19,6 +26,7 @@ _REACT_AGENT_MODULE = "langgraph.prebuilt.chat_agent_executor"
 class _PendingGraph:
     name: str | None
     is_agent: bool
+    metadata: dict[str, Any]
     claimed: bool = False
 
 
@@ -28,7 +36,11 @@ _pending: ContextVar[tuple[_PendingGraph, ...]] = ContextVar(
 
 
 def claim_graph() -> _PendingGraph | None:
-    """Return the announcement for the next graph root callback."""
+    """Claim the innermost graph announcement for its root callback.
+
+    Only the newest announcement is claimable, and only once, so nested graphs
+    do not leak their classification to internal callbacks.
+    """
     pending = _pending.get()
     if not pending:
         return None
@@ -58,34 +70,50 @@ def _react_agent_name(graph: Any) -> str | None:
     return str(name) if name and name != "LangGraph" else ""
 
 
-def _agent_name(graph: Any) -> tuple[bool, str | None]:
+def _bound_metadata(graph: Any) -> dict[str, Any]:
+    config = getattr(graph, "config", None)
+    if not isinstance(config, Mapping):
+        return {}
+    metadata = cast("Mapping[str, Any]", config).get("metadata")
+    if not isinstance(metadata, Mapping):
+        return {}
+    return dict(cast("Mapping[str, Any]", metadata))
+
+
+def _agent_name(
+    graph: Any,
+    metadata: Mapping[str, Any],
+) -> tuple[bool, str | None]:
     """Return whether ``graph`` is an agent and its application-provided name."""
     config = getattr(graph, "config", None)
     create_agent_name = create_agent_graph_name(config)
     if create_agent_name:
         return True, create_agent_name
-    if isinstance(config, Mapping):
-        metadata = cast("Mapping[str, Any]", config).get("metadata")
-        if isinstance(metadata, Mapping):
-            typed_metadata = cast("Mapping[str, Any]", metadata)
-            if (
-                typed_metadata.get("ls_integration")
-                == "langchain_create_agent"
-            ):
-                return True, None
+    if metadata.get("ls_integration") == "langchain_create_agent":
+        return True, None
     react_name = _react_agent_name(graph)
     if react_name is not None:
         return True, react_name or None
+    if (
+        metadata.get("otel_agent_span")
+        or metadata.get("agent_type")
+        or metadata.get("agent_name")
+    ):
+        name = metadata.get("agent_name")
+        return True, str(name) if name else None
     return False, None
 
 
-def _workflow_name(graph: Any) -> str | None:
-    name = getattr(graph, "name", None)
-    return str(name) if name else None
-
-
-def _push(name: str | None, is_agent: bool) -> _PendingGraph:
-    entry = _PendingGraph(name=name, is_agent=is_agent)
+def _push(
+    name: str | None,
+    is_agent: bool,
+    metadata: dict[str, Any],
+) -> _PendingGraph:
+    entry = _PendingGraph(
+        name=name,
+        is_agent=is_agent,
+        metadata=metadata,
+    )
     _pending.set(_pending.get() + (entry,))
     return entry
 
@@ -107,10 +135,14 @@ def wrap_stream(
 
     ``Pregel.invoke`` runs through ``stream``, so this covers both entry points.
     """
-    is_agent, name = _agent_name(instance)
-    if not is_agent:
-        name = _workflow_name(instance)
-    return _announce_at_stream_start(wrapped(*args, **kwargs), name, is_agent)
+    metadata = _bound_metadata(instance)
+    is_agent, name = _agent_name(instance, metadata)
+    return _announce_at_stream_start(
+        wrapped(*args, **kwargs),
+        name,
+        is_agent,
+        metadata,
+    )
 
 
 def wrap_astream(
@@ -123,16 +155,21 @@ def wrap_astream(
 
     ``Pregel.ainvoke`` runs through ``astream``, so this covers both entry points.
     """
-    is_agent, name = _agent_name(instance)
-    if not is_agent:
-        name = _workflow_name(instance)
-    return _announce_at_astream_start(wrapped(*args, **kwargs), name, is_agent)
+    metadata = _bound_metadata(instance)
+    is_agent, name = _agent_name(instance, metadata)
+    return _announce_at_astream_start(
+        wrapped(*args, **kwargs),
+        name,
+        is_agent,
+        metadata,
+    )
 
 
 def _announce_at_stream_start(
     stream: Iterator[Any],
     name: str | None,
     is_agent: bool,
+    metadata: dict[str, Any],
 ) -> Iterator[Any]:
     """Announce ``name`` for the first step of ``stream`` only.
 
@@ -145,7 +182,7 @@ def _announce_at_stream_start(
     # A generator body runs in the consumer's context, so the announcement lands
     # where the callbacks fire - on the first ``next()``, not here.
     iterator = iter(stream)
-    entry = _push(name, is_agent)
+    entry = _push(name, is_agent, metadata)
     try:
         first = next(iterator)
     except StopIteration:
@@ -160,10 +197,11 @@ async def _announce_at_astream_start(
     stream: AsyncIterator[Any],
     name: str | None,
     is_agent: bool,
+    metadata: dict[str, Any],
 ) -> AsyncIterator[Any]:
     """Announce ``name`` for the first step of ``stream`` only."""
     iterator = stream.__aiter__()
-    entry = _push(name, is_agent)
+    entry = _push(name, is_agent, metadata)
     try:
         first = await iterator.__anext__()
     except StopAsyncIteration:

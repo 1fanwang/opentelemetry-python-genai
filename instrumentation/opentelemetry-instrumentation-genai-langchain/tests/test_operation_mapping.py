@@ -211,8 +211,8 @@ class TestClassifyChainRun:
             pytest.param(
                 {"otel_agent_span": True},
                 True,
-                OperationName.INVOKE_AGENT,
-                id="explicit-agent-beats-announcement",
+                OperationName.INVOKE_WORKFLOW,
+                id="announcement-beats-inherited-agent-override",
             ),
             pytest.param(
                 {
@@ -248,6 +248,16 @@ class TestClassifyChainRun:
             announced_workflow=announced_workflow,
         )
         assert result == expected
+
+    def test_root_graph_announcement_beats_inherited_agent_metadata(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={"agent_type": "outer"},
+            kwargs={"name": "LangGraph"},
+            parent_run_id=None,
+            announced_workflow=True,
+        )
+        assert result == OperationName.INVOKE_WORKFLOW
 
     def test_root_chain_with_no_signals_is_workflow(self):
         # A root chain (no parent) with no special names defaults to workflow.
