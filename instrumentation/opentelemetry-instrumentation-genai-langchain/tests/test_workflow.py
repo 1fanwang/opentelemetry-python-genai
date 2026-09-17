@@ -10,10 +10,17 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
 
 from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
 from opentelemetry.test_util_genai.instrumentor import instrument
+from opentelemetry.trace import SpanKind
 
 langgraph_graph = pytest.importorskip("langgraph.graph")
 END = langgraph_graph.END
@@ -131,10 +138,10 @@ async def test_nested_graph_emits_workflow_span(
     ],
 )
 async def test_nested_graph_with_bound_agent_metadata_is_agent(
-    tracer_provider,
-    meter_provider,
-    logger_provider,
-    span_exporter,
+    tracer_provider: TracerProvider,
+    meter_provider: MeterProvider,
+    logger_provider: LoggerProvider,
+    span_exporter: InMemorySpanExporter,
     async_mode: bool,
     agent_metadata: dict[str, Any],
     agent_span_name: str,
@@ -195,10 +202,11 @@ async def test_nested_graph_with_bound_agent_metadata_is_agent(
         "invoke_workflow LangGraph"
     ]
     assert agent_spans[0].name == agent_span_name
+    assert agent_spans[0].kind == SpanKind.INTERNAL
     assert (
         agent_spans[0].attributes[GenAI.GEN_AI_CONVERSATION_ID] == "thread-1"
     )
-    assert agent_spans[0].attributes[GenAI.GEN_AI_AGENT_ID] == "agent-1"
+    assert GenAI.GEN_AI_AGENT_ID not in agent_spans[0].attributes
     assert (
         agent_spans[0].attributes[GenAI.GEN_AI_AGENT_DESCRIPTION]
         == "test agent"

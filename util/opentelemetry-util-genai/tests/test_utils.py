@@ -7,6 +7,7 @@ import os
 import unittest
 from collections.abc import Mapping
 from dataclasses import asdict
+from enum import Enum
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -31,22 +32,22 @@ from opentelemetry.semconv.attributes import (
 )
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai.handler import (
-    TelemetryHandler,
-    get_telemetry_handler,
-)
+from opentelemetry.util.genai._inference_invocation import LLMInvocation
+from opentelemetry.util.genai.handler import TelemetryHandler
 from opentelemetry.util.genai.types import (
     Blob,
     BlobPart,
     ContentCapturingMode,
     File,
     FilePart,
+    GenericPart,
     InputMessage,
     MessagePart,
     OutputMessage,
     Reasoning,
     ReasoningPart,
     Role,
+    SystemInstructionPart,
     Text,
     TextPart,
     Uri,
@@ -296,25 +297,24 @@ class TestShouldCaptureContent(unittest.TestCase):
 class TestTelemetryHandler(unittest.TestCase):
     def setUp(self):
         self.span_exporter = InMemorySpanExporter()
-        tracer_provider = TracerProvider()
-        tracer_provider.add_span_processor(
+        self.tracer_provider = TracerProvider()
+        self.tracer_provider.add_span_processor(
             SimpleSpanProcessor(self.span_exporter)
         )
         self.log_exporter = InMemoryLogRecordExporter()
-        logger_provider = LoggerProvider()
-        logger_provider.add_log_record_processor(
+        self.logger_provider = LoggerProvider()
+        self.logger_provider.add_log_record_processor(
             SimpleLogRecordProcessor(self.log_exporter)
         )
-        self.telemetry_handler = get_telemetry_handler(
-            tracer_provider=tracer_provider, logger_provider=logger_provider
+        self.telemetry_handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            logger_provider=self.logger_provider,
         )
 
     def tearDown(self):
         # Clear spans and reset the singleton telemetry handler so each test starts clean
         self.span_exporter.clear()
         self.log_exporter.clear()
-        if hasattr(get_telemetry_handler, "_default_handler"):
-            delattr(get_telemetry_handler, "_default_handler")
 
     @patch.dict(
         os.environ,
@@ -328,7 +328,8 @@ class TestTelemetryHandler(unittest.TestCase):
         chat_generation = _create_output_message("hello back")
         system_instruction = _create_system_instruction()
 
-        with self.telemetry_handler.inference(
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        with handler.inference(
             "test-provider",
             request_model="test-model",
             server_address="custom.server.com",
@@ -339,6 +340,7 @@ class TestTelemetryHandler(unittest.TestCase):
             invocation.attributes = {"custom_attr": "value"}
             invocation.temperature = 0.5
             invocation.top_p = 0.9
+            invocation.top_k = 40
             invocation.stop_sequences = ["stop"]
             invocation.finish_reasons = ["stop"]
             invocation.response_model_name = "test-response-model"
@@ -367,6 +369,7 @@ class TestTelemetryHandler(unittest.TestCase):
                 GenAI.GEN_AI_SYSTEM_INSTRUCTIONS: AnyNonNone(),
                 GenAI.GEN_AI_REQUEST_TEMPERATURE: 0.5,
                 GenAI.GEN_AI_REQUEST_TOP_P: 0.9,
+                GenAI.GEN_AI_REQUEST_TOP_K: 40,
                 GenAI.GEN_AI_REQUEST_STOP_SEQUENCES: ("stop",),
                 GenAI.GEN_AI_RESPONSE_FINISH_REASONS: ("stop",),
                 GenAI.GEN_AI_RESPONSE_MODEL: "test-response-model",
@@ -379,6 +382,7 @@ class TestTelemetryHandler(unittest.TestCase):
                 "custom_attr": "value",
             },
         )
+        self.assertIsInstance(span_attrs[GenAI.GEN_AI_REQUEST_TOP_K], int)
 
         input_message = _get_single_message(
             span_attrs, "gen_ai.input.messages"
@@ -407,11 +411,39 @@ class TestTelemetryHandler(unittest.TestCase):
             "OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT": "false",
         },
     )
+    def test_system_instruction_generic_part_on_span(self):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        with handler.inference("test-provider") as invocation:
+            invocation.system_instruction = [
+                TextPart(content="You are helpful"),
+                GenericPart(type="custom"),
+            ]
+
+        span = _get_single_span(self.span_exporter)
+        span_attrs = _get_span_attributes(span)
+        self.assertIn(GenAI.GEN_AI_SYSTEM_INSTRUCTIONS, span_attrs)
+        instructions = json.loads(span_attrs[GenAI.GEN_AI_SYSTEM_INSTRUCTIONS])
+        self.assertEqual(
+            instructions,
+            [
+                {"type": "text", "content": "You are helpful"},
+                {"type": "custom"},
+            ],
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+            "OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT": "false",
+        },
+    )
     def test_llm_manual_start_and_stop_creates_span(self):
         message = _create_input_message("hi")
         chat_generation = _create_output_message("ok")
 
-        invocation = self.telemetry_handler.inference(
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        invocation = handler.inference(
             "test-provider", request_model="manual-model"
         )
         invocation.input_messages = [message]
@@ -440,6 +472,46 @@ class TestTelemetryHandler(unittest.TestCase):
                 "extra_manual": "yes",
             },
         )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+            "OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT": "false",
+        },
+    )
+    def test_start_llm_captures_content_on_span(self):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        inv = LLMInvocation(request_model="legacy-model")
+        handler.start_llm(inv)
+        inv.input_messages = [_create_input_message("hi")]
+        inv.output_messages = [_create_output_message("hello")]
+        handler.stop_llm(inv)
+
+        span = _get_single_span(self.span_exporter)
+        attrs = _get_span_attributes(span)
+        assert GenAI.GEN_AI_INPUT_MESSAGES in attrs
+        assert GenAI.GEN_AI_OUTPUT_MESSAGES in attrs
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "EVENT_ONLY",
+            "OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT": "false",
+        },
+    )
+    def test_inference_messages_omitted_from_span_in_event_only_mode(self):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        with handler.inference(
+            "test-provider", request_model="test-model"
+        ) as inv:
+            inv.input_messages = [_create_input_message("hi")]
+            inv.output_messages = [_create_output_message("hello")]
+
+        span = _get_single_span(self.span_exporter)
+        attrs = _get_span_attributes(span)
+        assert GenAI.GEN_AI_INPUT_MESSAGES not in attrs
+        assert GenAI.GEN_AI_OUTPUT_MESSAGES not in attrs
 
     def test_start_inference_passes_sampling_attributes_at_span_creation(self):
         """Verify that sampling-relevant attributes are available at start_span() time."""
@@ -1011,6 +1083,280 @@ class TestTelemetryHandler(unittest.TestCase):
                     self.assertNotEqual(key, server_attributes.SERVER_ADDRESS)
                     self.assertNotEqual(key, server_attributes.SERVER_PORT)
 
+    def test_inference_cache_write_input_tokens(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.cache_write_input_tokens = 42
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.cache_write.input_tokens"] == 42
+
+    def test_inference_cache_creation_input_tokens_backward_compatibility(
+        self,
+    ):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.cache_creation_input_tokens = 42
+        assert invocation.cache_write_input_tokens == 42
+        assert invocation.cache_creation_input_tokens == 42
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.cache_write.input_tokens"] == 42
+
+    def test_inference_modality_tokens(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.text_input_tokens = 10
+        invocation.image_input_tokens = 20
+        invocation.audio_input_tokens = 30
+        invocation.text_output_tokens = 40
+        invocation.image_output_tokens = 50
+        invocation.audio_output_tokens = 60
+        invocation.text_cache_read_input_tokens = 5
+        invocation.image_cache_read_input_tokens = 6
+        invocation.audio_cache_read_input_tokens = 7
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.text.input_tokens"] == 10
+        assert attrs["gen_ai.usage.image.input_tokens"] == 20
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 30
+        assert attrs["gen_ai.usage.text.output_tokens"] == 40
+        assert attrs["gen_ai.usage.image.output_tokens"] == 50
+        assert attrs["gen_ai.usage.audio.output_tokens"] == 60
+        assert attrs["gen_ai.usage.text.cache_read.input_tokens"] == 5
+        assert attrs["gen_ai.usage.image.cache_read.input_tokens"] == 6
+        assert attrs["gen_ai.usage.audio.cache_read.input_tokens"] == 7
+
+    def test_set_modality_tokens_records_each_bucket(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [("text", 10), ("image", 20), ("audio", 30)]
+        )
+        invocation.set_output_tokens(
+            [("text", 40), ("image", 50), ("audio", 60)]
+        )
+        invocation.set_cache_read_input_tokens(
+            [("text", 5), ("image", 6), ("audio", 7)]
+        )
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key, value in (
+            ("gen_ai.usage.text.input_tokens", 10),
+            ("gen_ai.usage.image.input_tokens", 20),
+            ("gen_ai.usage.audio.input_tokens", 30),
+            ("gen_ai.usage.text.output_tokens", 40),
+            ("gen_ai.usage.image.output_tokens", 50),
+            ("gen_ai.usage.audio.output_tokens", 60),
+            ("gen_ai.usage.text.cache_read.input_tokens", 5),
+            ("gen_ai.usage.image.cache_read.input_tokens", 6),
+            ("gen_ai.usage.audio.cache_read.input_tokens", 7),
+        ):
+            assert isinstance(attrs[key], int)
+            assert attrs[key] == value
+
+    def test_set_modality_tokens_accepts_enum_valued_modality(self):
+        class _Modality(Enum):
+            AUDIO = "AUDIO"
+
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([(_Modality.AUDIO, 11)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 11
+
+    def test_set_modality_tokens_replaces_rather_than_merges(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("text", 10), ("audio", 90)])
+        invocation.set_input_tokens([("text", 12)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.text.input_tokens"] == 12
+        assert "gen_ai.usage.audio.input_tokens" not in attrs
+
+    def test_set_modality_tokens_empty_iterable_clears_the_bucket(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("audio", 90)])
+        invocation.set_input_tokens([])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert "gen_ai.usage.audio.input_tokens" not in attrs
+
+    def test_set_modality_tokens_none_leaves_values_alone(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("audio", 90)])
+        invocation.set_input_tokens(None)
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 90
+
+    def test_set_modality_tokens_drops_invalid_counts(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [
+                ("text", True),
+                ("image", -5),
+                ("audio", None),
+            ]
+        )
+        invocation.set_output_tokens([("text", "10"), ("audio", 1.5)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in (
+            "gen_ai.usage.text.input_tokens",
+            "gen_ai.usage.image.input_tokens",
+            "gen_ai.usage.audio.input_tokens",
+            "gen_ai.usage.text.output_tokens",
+            "gen_ai.usage.audio.output_tokens",
+        ):
+            assert key not in attrs
+
+    def test_set_modality_tokens_drops_unmapped_modalities(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [
+                ("video", 7),
+                ("document", 8),
+                ("MODALITY_UNSPECIFIED", 9),
+                ("", 10),
+            ]
+        )
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in attrs:
+            assert not key.startswith("gen_ai.usage.video")
+            assert not key.startswith("gen_ai.usage.document")
+        assert "gen_ai.usage.text.input_tokens" not in attrs
+
+    def test_inference_modality_and_cache_tokens_omitted_when_zero(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.cache_write_input_tokens = 0
+        invocation.cache_read_input_tokens = 0
+        invocation.thinking_tokens = 0
+        invocation.text_input_tokens = 0
+        invocation.image_input_tokens = 0
+        invocation.audio_input_tokens = 0
+        invocation.text_output_tokens = 0
+        invocation.image_output_tokens = 0
+        invocation.audio_output_tokens = 0
+        invocation.text_cache_read_input_tokens = 0
+        invocation.image_cache_read_input_tokens = 0
+        invocation.audio_cache_read_input_tokens = 0
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in (
+            "gen_ai.usage.cache_write.input_tokens",
+            "gen_ai.usage.cache_read.input_tokens",
+            "gen_ai.usage.reasoning.output_tokens",
+            "gen_ai.usage.text.input_tokens",
+            "gen_ai.usage.image.input_tokens",
+            "gen_ai.usage.audio.input_tokens",
+            "gen_ai.usage.text.output_tokens",
+            "gen_ai.usage.image.output_tokens",
+            "gen_ai.usage.audio.output_tokens",
+            "gen_ai.usage.text.cache_read.input_tokens",
+            "gen_ai.usage.image.cache_read.input_tokens",
+            "gen_ai.usage.audio.cache_read.input_tokens",
+        ):
+            assert key not in attrs
+
+    def test_inference_reasoning_and_continuation_and_compaction(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.reasoning_level = "high"
+        invocation.previous_response_id = "resp_123"
+        invocation.conversation_compacted = True
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.request.reasoning.level"] == "high"
+        assert attrs["gen_ai.request.previous_response.id"] == "resp_123"
+        assert attrs["gen_ai.conversation.compacted"] is True
+
+    def test_inference_prompt_template_attributes(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.prompt_name = "chat_prompt"
+        invocation.prompt_version = "1.0.0"
+        invocation.prompt_variables = {"user": "Alice", "style": "formal"}
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_PROMPT_NAME] == "chat_prompt"
+        assert attrs["gen_ai.prompt.version"] == "1.0.0"
+        # Prompt variables are gated by content capturing
+        assert "gen_ai.prompt.variable.user" not in attrs
+        assert "gen_ai.prompt.variable.style" not in attrs
+
+        with patch.dict(
+            os.environ,
+            {
+                "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_AND_EVENT",
+            },
+        ):
+            handler = TelemetryHandler(
+                tracer_provider=self.tracer_provider,
+                logger_provider=self.logger_provider,
+            )
+            invocation = handler.inference(
+                "test-provider", request_model="test-model"
+            )
+            invocation.prompt_name = "chat_prompt"
+            invocation.prompt_version = "1.0.0"
+            invocation.prompt_variables = {
+                "user": "Alice",
+                "style": "formal",
+                "tags": ["a", "b"],
+            }
+            invocation.stop()
+
+            attrs = self.span_exporter.get_finished_spans()[-1].attributes
+            assert attrs[GenAI.GEN_AI_PROMPT_NAME] == "chat_prompt"
+            assert attrs["gen_ai.prompt.version"] == "1.0.0"
+            assert attrs["gen_ai.prompt.variable.user"] == "Alice"
+            assert attrs["gen_ai.prompt.variable.style"] == "formal"
+            assert attrs["gen_ai.prompt.variable.tags"] == '["a","b"]'
+
+            event_attrs = self.log_exporter.get_finished_logs()[
+                -1
+            ].log_record.attributes
+            assert event_attrs[GenAI.GEN_AI_PROMPT_NAME] == "chat_prompt"
+            assert event_attrs["gen_ai.prompt.version"] == "1.0.0"
+            assert event_attrs["gen_ai.prompt.variable.user"] == "Alice"
+            assert event_attrs["gen_ai.prompt.variable.style"] == "formal"
+            assert event_attrs["gen_ai.prompt.variable.tags"] == '["a","b"]'
+
 
 class AnyNonNone:
     def __eq__(self, other):
@@ -1035,6 +1381,53 @@ class TestRole(unittest.TestCase):
         serialized = json.loads(gen_ai_json_dumps(asdict(message)))
 
         self.assertEqual(serialized["role"], "assistant")
+
+
+class TestMessageModels(unittest.TestCase):
+    def test_output_message_optional_finish_reason(self):
+        message = OutputMessage(
+            role=Role.ASSISTANT,
+            parts=[TextPart(content="streamed")],
+        )
+        self.assertIsNone(message.finish_reason)
+        self.assertIsNone(message.name)
+        serialized = json.loads(gen_ai_json_dumps(asdict(message)))
+        self.assertEqual(serialized["role"], "assistant")
+        self.assertIsNone(serialized["finish_reason"])
+
+    def test_messages_with_name(self):
+        in_msg = InputMessage(
+            role=Role.USER,
+            parts=[TextPart(content="hi")],
+            name="alice",
+        )
+        self.assertEqual(in_msg.name, "alice")
+        serialized_in = json.loads(gen_ai_json_dumps(asdict(in_msg)))
+        self.assertEqual(serialized_in["name"], "alice")
+
+        out_msg = OutputMessage(
+            role=Role.ASSISTANT,
+            parts=[TextPart(content="hello")],
+            finish_reason="stop",
+            name="bot",
+        )
+        self.assertEqual(out_msg.name, "bot")
+        serialized_out = json.loads(gen_ai_json_dumps(asdict(out_msg)))
+        self.assertEqual(serialized_out["name"], "bot")
+
+    def test_system_instruction_part(self):
+        text_part: SystemInstructionPart = TextPart(content="You are helpful")
+        generic_part: SystemInstructionPart = GenericPart(type="custom")
+        self.assertEqual(text_part.content, "You are helpful")
+        self.assertEqual(generic_part.type, "custom")
+        self.assertEqual(
+            json.loads(gen_ai_json_dumps(asdict(text_part))),
+            {"type": "text", "content": "You are helpful"},
+        )
+        self.assertEqual(
+            json.loads(gen_ai_json_dumps(asdict(generic_part))),
+            {"type": "custom"},
+        )
 
 
 _REAL_PNG_BYTES = (
