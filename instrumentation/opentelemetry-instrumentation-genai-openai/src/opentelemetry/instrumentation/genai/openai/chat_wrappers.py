@@ -7,6 +7,7 @@ import json
 import logging
 
 from openai import AsyncStream, Stream
+from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionChunk
 
 from opentelemetry.semconv._incubating.attributes import (
@@ -26,8 +27,8 @@ from opentelemetry.util.genai.types import (
 
 from .chat_buffers import ChoiceBuffer
 from .utils import (
-    get_property_value,
     map_finish_reason,
+    set_chat_usage,
 )
 
 _logger = logging.getLogger(__name__)
@@ -41,16 +42,7 @@ class _ChatStreamMixin:
     _self_choice_buffers: list[ChoiceBuffer]
     _self_response_id: str | None
     _self_service_tier: str | None
-    _self_prompt_tokens: int | None
-    _self_completion_tokens: int | None
-    _self_cached_prompt_tokens: int | None
-    _self_cache_write_prompt_tokens: int | None
-    _self_text_prompt_tokens: int | None
-    _self_image_prompt_tokens: int | None
-    _self_audio_prompt_tokens: int | None
-    _self_text_completion_tokens: int | None
-    _self_audio_completion_tokens: int | None
-    _self_reasoning_tokens: int | None
+    _self_usage: CompletionUsage | None
 
     def _set_response_model(self, chunk: ChatCompletionChunk) -> None:
         # Set eagerly so the per-chunk streaming timing metrics carry
@@ -103,44 +95,6 @@ class _ChatStreamMixin:
                         tool_call
                     )
 
-    def _set_usage(self, chunk: ChatCompletionChunk) -> None:
-        usage = getattr(chunk, "usage", None)
-        if usage:
-            self._self_completion_tokens = usage.completion_tokens
-            self._self_prompt_tokens = usage.prompt_tokens
-            prompt_tokens_details = getattr(
-                usage, "prompt_tokens_details", None
-            )
-            if prompt_tokens_details is not None:
-                self._self_cached_prompt_tokens = get_property_value(
-                    prompt_tokens_details, "cached_tokens"
-                )
-            self._self_cache_write_prompt_tokens = get_property_value(
-                prompt_tokens_details, "cache_write_tokens"
-            )
-            self._self_text_prompt_tokens = get_property_value(
-                prompt_tokens_details, "text_tokens"
-            )
-            self._self_image_prompt_tokens = get_property_value(
-                prompt_tokens_details, "image_tokens"
-            )
-            self._self_audio_prompt_tokens = get_property_value(
-                prompt_tokens_details, "audio_tokens"
-            )
-            completion_tokens_details = getattr(
-                usage, "completion_tokens_details", None
-            )
-            self._self_text_completion_tokens = get_property_value(
-                completion_tokens_details, "text_tokens"
-            )
-            self._self_audio_completion_tokens = get_property_value(
-                completion_tokens_details, "audio_tokens"
-            )
-            if completion_tokens_details is not None:
-                self._self_reasoning_tokens = get_property_value(
-                    completion_tokens_details, "reasoning_tokens"
-                )
-
     def _process_chunk(self, chunk: ChatCompletionChunk) -> None:
         if not isinstance(chunk, ChatCompletionChunk):
             # raw-response stream can be parsed into a caller-defined chunk type.
@@ -154,7 +108,9 @@ class _ChatStreamMixin:
         self._set_response_model(chunk)
         self._set_response_service_tier(chunk)
         self._build_streaming_response(chunk)
-        self._set_usage(chunk)
+        usage: CompletionUsage | None = getattr(chunk, "usage", None)
+        if usage is not None:
+            self._self_usage = usage
 
     def _set_output_messages(self) -> None:
         if not self._self_capture_content:  # optimization
@@ -199,28 +155,10 @@ class _ChatStreamMixin:
 
     def _cleanup(self, error: BaseException | None = None) -> None:
         self._self_invocation.response_id = self._self_response_id
-        self._self_invocation.input_tokens = self._self_prompt_tokens
-        self._self_invocation.output_tokens = self._self_completion_tokens
-        self._self_invocation.cache_read_input_tokens = (
-            self._self_cached_prompt_tokens
-        )
-        self._self_invocation.cache_write_input_tokens = (
-            self._self_cache_write_prompt_tokens
-        )
-        self._self_invocation.text_input_tokens = self._self_text_prompt_tokens
-        self._self_invocation.image_input_tokens = (
-            self._self_image_prompt_tokens
-        )
-        self._self_invocation.audio_input_tokens = (
-            self._self_audio_prompt_tokens
-        )
-        self._self_invocation.text_output_tokens = (
-            self._self_text_completion_tokens
-        )
-        self._self_invocation.audio_output_tokens = (
-            self._self_audio_completion_tokens
-        )
-        self._self_invocation.thinking_tokens = self._self_reasoning_tokens
+        if self._self_usage is not None:
+            set_chat_usage(
+                invocation=self._self_invocation, usage=self._self_usage
+            )
         finish_reasons = [
             choice.finish_reason
             for choice in self._self_choice_buffers
@@ -259,16 +197,7 @@ class ChatStreamWrapper(
         self._self_capture_content = capture_content
         self._self_response_id = None
         self._self_service_tier = None
-        self._self_prompt_tokens = None
-        self._self_completion_tokens = None
-        self._self_cached_prompt_tokens = None
-        self._self_cache_write_prompt_tokens = None
-        self._self_text_prompt_tokens = None
-        self._self_image_prompt_tokens = None
-        self._self_audio_prompt_tokens = None
-        self._self_text_completion_tokens = None
-        self._self_audio_completion_tokens = None
-        self._self_reasoning_tokens = None
+        self._self_usage = None
 
 
 class AsyncChatStreamWrapper(
@@ -287,16 +216,7 @@ class AsyncChatStreamWrapper(
         self._self_capture_content = capture_content
         self._self_response_id = None
         self._self_service_tier = None
-        self._self_prompt_tokens = None
-        self._self_completion_tokens = None
-        self._self_cached_prompt_tokens = None
-        self._self_cache_write_prompt_tokens = None
-        self._self_text_prompt_tokens = None
-        self._self_image_prompt_tokens = None
-        self._self_audio_prompt_tokens = None
-        self._self_text_completion_tokens = None
-        self._self_audio_completion_tokens = None
-        self._self_reasoning_tokens = None
+        self._self_usage = None
 
 
 __all__ = [

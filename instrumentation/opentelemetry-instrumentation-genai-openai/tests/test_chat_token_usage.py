@@ -55,6 +55,7 @@ def instrumentation(
                 "completion_tokens_details": {
                     "text_tokens": 18,
                     "audio_tokens": 2,
+                    "reasoning_tokens": 3,
                 },
             },
             id="all-details",
@@ -63,7 +64,18 @@ def instrumentation(
             {"prompt_tokens_details": {"audio_tokens": 10}},
             id="partial-details",
         ),
+        pytest.param(
+            {"prompt_tokens_details": {"cache_write_tokens": 10}},
+            id="cache-write-only",
+        ),
         pytest.param({}, id="absent-details"),
+        pytest.param(
+            {
+                "prompt_tokens_details": {},
+                "completion_tokens_details": {},
+            },
+            id="empty-details",
+        ),
         pytest.param(
             {
                 "prompt_tokens_details": None,
@@ -83,9 +95,25 @@ def instrumentation(
                 "completion_tokens_details": {
                     "text_tokens": 0,
                     "audio_tokens": 0,
+                    "reasoning_tokens": 0,
                 },
             },
             id="zero-details",
+        ),
+        pytest.param(
+            {
+                "prompt_tokens_details": {
+                    "cache_write_tokens": 10,
+                    "text_tokens": -1,
+                    "image_tokens": -2,
+                    "audio_tokens": -3,
+                },
+                "completion_tokens_details": {
+                    "text_tokens": -1,
+                    "audio_tokens": -2,
+                },
+            },
+            id="negative-modalities",
         ),
     ],
 )
@@ -151,12 +179,16 @@ def chat_chunks(chat_completion: ChatCompletion) -> list[ChatCompletionChunk]:
 
 
 def assert_usage_is_buffered(invocation: InferenceInvocation) -> None:
+    assert invocation.input_tokens is None
+    assert invocation.output_tokens is None
+    assert invocation.cache_read_input_tokens is None
     assert invocation.cache_write_input_tokens is None
     assert invocation.text_input_tokens is None
     assert invocation.image_input_tokens is None
     assert invocation.audio_input_tokens is None
     assert invocation.text_output_tokens is None
     assert invocation.audio_output_tokens is None
+    assert invocation.thinking_tokens is None
 
 
 def assert_usage(
@@ -188,13 +220,18 @@ def assert_usage(
         (
             "completion_tokens_details",
             "output_tokens",
-            {"text_tokens": "text", "audio_tokens": "audio"},
+            {
+                "text_tokens": "text",
+                "audio_tokens": "audio",
+                "reasoning_tokens": "reasoning",
+            },
         ),
     ):
         details = usage.get(field)
         if isinstance(details, dict):
             for name, attribute in mapping.items():
-                if value := details.get(name):
+                value: object = details.get(name)
+                if type(value) is int and value > 0:
                     expected[f"gen_ai.usage.{attribute}.{suffix}"] = value
     actual = {
         key: value
@@ -206,13 +243,18 @@ def assert_usage(
     assert all(type(value) is int for value in actual.values())
 
 
-@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("streaming", "drain_stream"),
+    [(False, True), (True, True), (True, False)],
+    ids=["nonstreaming", "stream-exhausted", "stream-closed"],
+)
 def test_chat_detailed_token_usage(
     openai_client: OpenAI,
     monkeypatch: pytest.MonkeyPatch,
     chat_completion: ChatCompletion,
     chat_chunks: list[ChatCompletionChunk],
     streaming: bool,
+    drain_stream: bool,
     usage: dict[str, Any],
     span_exporter: InMemorySpanExporter,
 ) -> None:
@@ -237,7 +279,10 @@ def test_chat_detailed_token_usage(
         with response:
             for chunk in response:
                 assert_usage_is_buffered(invocation=response._self_invocation)
+                assert not span_exporter.get_finished_spans()
                 received.append(chunk)
+                if not drain_stream and chunk.usage is not None:
+                    break
         assert received == chat_chunks
     else:
         assert response == chat_completion
@@ -246,13 +291,18 @@ def test_chat_detailed_token_usage(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("streaming", "drain_stream"),
+    [(False, True), (True, True), (True, False)],
+    ids=["nonstreaming", "stream-exhausted", "stream-closed"],
+)
 async def test_async_chat_detailed_token_usage(
     async_openai_client: AsyncOpenAI,
     monkeypatch: pytest.MonkeyPatch,
     chat_completion: ChatCompletion,
     chat_chunks: list[ChatCompletionChunk],
     streaming: bool,
+    drain_stream: bool,
     usage: dict[str, Any],
     span_exporter: InMemorySpanExporter,
 ) -> None:
@@ -277,7 +327,10 @@ async def test_async_chat_detailed_token_usage(
         async with response:
             async for chunk in response:
                 assert_usage_is_buffered(invocation=response._self_invocation)
+                assert not span_exporter.get_finished_spans()
                 received.append(chunk)
+                if not drain_stream and chunk.usage is not None:
+                    break
         assert received == chat_chunks
     else:
         assert response == chat_completion

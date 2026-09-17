@@ -67,30 +67,49 @@ def get_property_value(obj, property_name):
     return getattr(obj, property_name, None)
 
 
-def set_chat_usage_details(
+def set_chat_usage(
     invocation: InferenceInvocation, usage: CompletionUsage
 ) -> None:
-    prompt_details: object = get_property_value(usage, "prompt_tokens_details")
+    invocation.input_tokens = usage.prompt_tokens
+    invocation.output_tokens = usage.completion_tokens
+    prompt_details: object = get_property_value(
+        obj=usage, property_name="prompt_tokens_details"
+    )
     completion_details: object = get_property_value(
-        usage, "completion_tokens_details"
+        obj=usage, property_name="completion_tokens_details"
+    )
+    invocation.cache_read_input_tokens = get_property_value(
+        obj=prompt_details, property_name="cached_tokens"
     )
     invocation.cache_write_input_tokens = get_property_value(
-        prompt_details, "cache_write_tokens"
+        obj=prompt_details, property_name="cache_write_tokens"
     )
-    invocation.text_input_tokens = get_property_value(
-        prompt_details, "text_tokens"
+    invocation.thinking_tokens = get_property_value(
+        obj=completion_details, property_name="reasoning_tokens"
     )
-    invocation.image_input_tokens = get_property_value(
-        prompt_details, "image_tokens"
+    invocation.set_input_tokens(
+        entries=(
+            (
+                modality,
+                get_property_value(
+                    obj=prompt_details,
+                    property_name=f"{modality}_tokens",
+                ),
+            )
+            for modality in ("text", "image", "audio")
+        )
     )
-    invocation.audio_input_tokens = get_property_value(
-        prompt_details, "audio_tokens"
-    )
-    invocation.text_output_tokens = get_property_value(
-        completion_details, "text_tokens"
-    )
-    invocation.audio_output_tokens = get_property_value(
-        completion_details, "audio_tokens"
+    invocation.set_output_tokens(
+        entries=(
+            (
+                modality,
+                get_property_value(
+                    obj=completion_details,
+                    property_name=f"{modality}_tokens",
+                ),
+            )
+            for modality in ("text", "audio")
+        )
     )
 
 
