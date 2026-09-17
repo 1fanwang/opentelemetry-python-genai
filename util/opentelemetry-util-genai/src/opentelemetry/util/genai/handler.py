@@ -11,10 +11,12 @@ Classes:
     - TelemetryHandler: Manages GenAI invocation lifecycles and emits telemetry.
 
 Functions:
-    - get_telemetry_handler: Returns a singleton `TelemetryHandler` instance.
 
 Usage:
-    handler = get_telemetry_handler()
+    handler = TelemetryHandler(
+        instrumentation_scope_name=__name__,
+        instrumentation_scope_version=__version__,
+    )
 
     # Factory method: construct and start in one call, then stop or fail.
     invocation = handler.inference("my-provider", request_model="my-model")
@@ -41,6 +43,7 @@ from opentelemetry._logs import (
     LoggerProvider,
     get_logger,
 )
+from opentelemetry.context import Context
 from opentelemetry.metrics import Meter, MeterProvider, get_meter
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace import (
@@ -85,21 +88,44 @@ class TelemetryHandler:
         meter_provider: MeterProvider | None = None,
         logger_provider: LoggerProvider | None = None,
         completion_hook: CompletionHook | None = None,
+        instrumentation_scope_name: str | None = None,
+        instrumentation_scope_version: str | None = None,
     ):
+        """Creates a new telemetry handler.
+
+        Args:
+            instrumentation_scope_name: the name of the instrumentation library
+                emitting the telemetry, reported as the instrumentation scope
+                name. Instrumentations must pass their dotted package path so
+                telemetry is attributable to them; it defaults to this module for
+                backwards compatibility.
+            instrumentation_scope_version: the version of the instrumentation
+                library, reported as the instrumentation scope version.
+        """
         schema_url = Schemas.V1_37_0.value
+        # The scope name and version must describe the same library, so a
+        # version passed without a name is dropped rather than pinned onto the
+        # util's own scope name.
+        if instrumentation_scope_name is None:
+            instrumentation_scope_name = __name__
+            instrumentation_scope_version = __version__
+        version = instrumentation_scope_version or ""
         self._tracer = get_tracer(
-            __name__,
-            __version__,
+            instrumentation_scope_name,
+            version,
             tracer_provider,
             schema_url=schema_url,
         )
         meter: Meter = get_meter(
-            __name__, meter_provider=meter_provider, schema_url=schema_url
+            instrumentation_scope_name,
+            version,
+            meter_provider=meter_provider,
+            schema_url=schema_url,
         )
         self._instruments = _Instruments(meter)
         self._logger = get_logger(
-            __name__,
-            __version__,
+            instrumentation_scope_name,
+            version,
             logger_provider,
             schema_url=schema_url,
         )
@@ -243,6 +269,7 @@ class TelemetryHandler:
         tool_type: str | None = None,
         tool_call_id: str | None = None,
         tool_description: str | None = None,
+        context: Context | None = None,
     ) -> ToolInvocation:
         """Create and start a tool invocation.
 
@@ -262,6 +289,7 @@ class TelemetryHandler:
             tool_call_id=tool_call_id,
             tool_description=tool_description,
             content_capturing_mode=self._content_capturing_mode,
+            context=context,
         )
 
     def start_workflow(
@@ -418,6 +446,7 @@ class TelemetryHandler:
         agent_name: str | None = None,
         tool_call_id: str | None = None,
         tool_description: str | None = None,
+        context: Context | None = None,
     ) -> ToolInvocation:
         """Returns a Tool invocation. Starts span when called.
 
@@ -445,6 +474,7 @@ class TelemetryHandler:
             tool_call_id=tool_call_id,
             tool_description=tool_description,
             content_capturing_mode=self._content_capturing_mode,
+            context=context,
         )
 
     def start_invoke_local_agent(
@@ -597,6 +627,9 @@ def get_telemetry_handler(
 ) -> TelemetryHandler:
     """
     Returns a singleton TelemetryHandler instance.
+
+    .. deprecated::
+        Construct a :class:`TelemetryHandler` directly instead.
     """
     handler: TelemetryHandler | None = getattr(
         get_telemetry_handler, "_default_handler", None

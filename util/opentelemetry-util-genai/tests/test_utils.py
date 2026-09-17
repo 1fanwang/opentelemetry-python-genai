@@ -7,6 +7,7 @@ import os
 import unittest
 from collections.abc import Mapping
 from dataclasses import asdict
+from enum import Enum
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -32,10 +33,7 @@ from opentelemetry.semconv.attributes import (
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace.status import StatusCode
 from opentelemetry.util.genai._inference_invocation import LLMInvocation
-from opentelemetry.util.genai.handler import (
-    TelemetryHandler,
-    get_telemetry_handler,
-)
+from opentelemetry.util.genai.handler import TelemetryHandler
 from opentelemetry.util.genai.types import (
     Blob,
     BlobPart,
@@ -308,7 +306,7 @@ class TestTelemetryHandler(unittest.TestCase):
         self.logger_provider.add_log_record_processor(
             SimpleLogRecordProcessor(self.log_exporter)
         )
-        self.telemetry_handler = get_telemetry_handler(
+        self.telemetry_handler = TelemetryHandler(
             tracer_provider=self.tracer_provider,
             logger_provider=self.logger_provider,
         )
@@ -317,8 +315,6 @@ class TestTelemetryHandler(unittest.TestCase):
         # Clear spans and reset the singleton telemetry handler so each test starts clean
         self.span_exporter.clear()
         self.log_exporter.clear()
-        if hasattr(get_telemetry_handler, "_default_handler"):
-            delattr(get_telemetry_handler, "_default_handler")
 
     @patch.dict(
         os.environ,
@@ -344,6 +340,7 @@ class TestTelemetryHandler(unittest.TestCase):
             invocation.attributes = {"custom_attr": "value"}
             invocation.temperature = 0.5
             invocation.top_p = 0.9
+            invocation.top_k = 40
             invocation.stop_sequences = ["stop"]
             invocation.finish_reasons = ["stop"]
             invocation.response_model_name = "test-response-model"
@@ -372,6 +369,7 @@ class TestTelemetryHandler(unittest.TestCase):
                 GenAI.GEN_AI_SYSTEM_INSTRUCTIONS: AnyNonNone(),
                 GenAI.GEN_AI_REQUEST_TEMPERATURE: 0.5,
                 GenAI.GEN_AI_REQUEST_TOP_P: 0.9,
+                GenAI.GEN_AI_REQUEST_TOP_K: 40,
                 GenAI.GEN_AI_REQUEST_STOP_SEQUENCES: ("stop",),
                 GenAI.GEN_AI_RESPONSE_FINISH_REASONS: ("stop",),
                 GenAI.GEN_AI_RESPONSE_MODEL: "test-response-model",
@@ -384,6 +382,7 @@ class TestTelemetryHandler(unittest.TestCase):
                 "custom_attr": "value",
             },
         )
+        self.assertIsInstance(span_attrs[GenAI.GEN_AI_REQUEST_TOP_K], int)
 
         input_message = _get_single_message(
             span_attrs, "gen_ai.input.messages"
@@ -1133,6 +1132,127 @@ class TestTelemetryHandler(unittest.TestCase):
         assert attrs["gen_ai.usage.text.cache_read.input_tokens"] == 5
         assert attrs["gen_ai.usage.image.cache_read.input_tokens"] == 6
         assert attrs["gen_ai.usage.audio.cache_read.input_tokens"] == 7
+
+    def test_set_modality_tokens_records_each_bucket(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [("text", 10), ("image", 20), ("audio", 30)]
+        )
+        invocation.set_output_tokens(
+            [("text", 40), ("image", 50), ("audio", 60)]
+        )
+        invocation.set_cache_read_input_tokens(
+            [("text", 5), ("image", 6), ("audio", 7)]
+        )
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key, value in (
+            ("gen_ai.usage.text.input_tokens", 10),
+            ("gen_ai.usage.image.input_tokens", 20),
+            ("gen_ai.usage.audio.input_tokens", 30),
+            ("gen_ai.usage.text.output_tokens", 40),
+            ("gen_ai.usage.image.output_tokens", 50),
+            ("gen_ai.usage.audio.output_tokens", 60),
+            ("gen_ai.usage.text.cache_read.input_tokens", 5),
+            ("gen_ai.usage.image.cache_read.input_tokens", 6),
+            ("gen_ai.usage.audio.cache_read.input_tokens", 7),
+        ):
+            assert isinstance(attrs[key], int)
+            assert attrs[key] == value
+
+    def test_set_modality_tokens_accepts_enum_valued_modality(self):
+        class _Modality(Enum):
+            AUDIO = "AUDIO"
+
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([(_Modality.AUDIO, 11)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 11
+
+    def test_set_modality_tokens_replaces_rather_than_merges(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("text", 10), ("audio", 90)])
+        invocation.set_input_tokens([("text", 12)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.text.input_tokens"] == 12
+        assert "gen_ai.usage.audio.input_tokens" not in attrs
+
+    def test_set_modality_tokens_empty_iterable_clears_the_bucket(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("audio", 90)])
+        invocation.set_input_tokens([])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert "gen_ai.usage.audio.input_tokens" not in attrs
+
+    def test_set_modality_tokens_none_leaves_values_alone(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("audio", 90)])
+        invocation.set_input_tokens(None)
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 90
+
+    def test_set_modality_tokens_drops_invalid_counts(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [
+                ("text", True),
+                ("image", -5),
+                ("audio", None),
+            ]
+        )
+        invocation.set_output_tokens([("text", "10"), ("audio", 1.5)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in (
+            "gen_ai.usage.text.input_tokens",
+            "gen_ai.usage.image.input_tokens",
+            "gen_ai.usage.audio.input_tokens",
+            "gen_ai.usage.text.output_tokens",
+            "gen_ai.usage.audio.output_tokens",
+        ):
+            assert key not in attrs
+
+    def test_set_modality_tokens_drops_unmapped_modalities(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [
+                ("video", 7),
+                ("document", 8),
+                ("MODALITY_UNSPECIFIED", 9),
+                ("", 10),
+            ]
+        )
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in attrs:
+            assert not key.startswith("gen_ai.usage.video")
+            assert not key.startswith("gen_ai.usage.document")
+        assert "gen_ai.usage.text.input_tokens" not in attrs
 
     def test_inference_modality_and_cache_tokens_omitted_when_zero(self):
         invocation = self.telemetry_handler.inference(
