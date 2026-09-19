@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
@@ -238,7 +237,6 @@ def assert_usage(
         for key, value in span.attributes.items()
         if key.startswith("gen_ai.usage.")
     }
-    print(json.dumps({"exported_usage": actual}, sort_keys=True))
     assert actual == expected
     assert all(type(value) is int for value in actual.values())
 
