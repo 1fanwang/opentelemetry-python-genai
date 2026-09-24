@@ -887,3 +887,56 @@ def test_sibling_workflow_partial_failure(
         spans_by_name["pipeline"].attributes[error_attributes.ERROR_TYPE]
         == "RuntimeError"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+async def test_nested_runtime_workflow_name_matches_parent(
+    instrument_langchain: Any,
+    span_exporter: InMemorySpanExporter,
+    async_mode: bool,
+) -> None:
+    inner = _graph(_respond, name="inner")
+    metadata = {"workflow_name": "shared_workflow"}
+
+    def run_inner(state: _State) -> _State:
+        return inner.invoke(state, config={"metadata": metadata})
+
+    async def arun_inner(state: _State) -> _State:
+        return await inner.ainvoke(state, config={"metadata": metadata})
+
+    outer = _graph(arun_inner if async_mode else run_inner, name="outer")
+    with instrument_langchain():
+        inputs = {"messages": [HumanMessage(content="hello")]}
+        if async_mode:
+            await outer.ainvoke(inputs, config={"metadata": metadata})
+        else:
+            outer.invoke(inputs, config={"metadata": metadata})
+
+    spans = _workflow_spans(span_exporter)
+    assert len(spans) == 2
+    assert all(
+        span.attributes[GenAI.GEN_AI_WORKFLOW_NAME] == "shared_workflow"
+        for span in spans
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+async def test_runtime_agent_metadata_announces_only_graph_root(
+    instrument_langchain: Any,
+    span_exporter: InMemorySpanExporter,
+    async_mode: bool,
+) -> None:
+    graph = _graph(_respond, name="compiled_graph")
+
+    with instrument_langchain():
+        inputs = {"messages": [HumanMessage(content="hello")]}
+        config = {"metadata": {"agent_name": "runtime_agent"}}
+        if async_mode:
+            await graph.ainvoke(inputs, config=config)
+        else:
+            graph.invoke(inputs, config=config)
+
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["invoke_agent runtime_agent"]

@@ -176,6 +176,31 @@ class TestOnChainStartWorkflow:
 
         telemetry.workflow.assert_called_once_with(name="MyLangGraph")
 
+    @pytest.mark.parametrize("kwargs", [{}, {"name": None}, {"name": ""}])
+    def test_workflow_name_from_serialized(self, kwargs):
+        handler, telemetry, _, _ = _make_handler()
+
+        handler.on_chain_start(
+            serialized={"name": "MyLangGraph"},
+            inputs={},
+            run_id=_run_id(),
+            **kwargs,
+        )
+
+        telemetry.workflow.assert_called_once_with(name="MyLangGraph")
+
+    def test_callback_name_overrides_serialized_name(self):
+        handler, telemetry, _, _ = _make_handler()
+
+        handler.on_chain_start(
+            serialized={"name": "MyLangGraph"},
+            inputs={},
+            run_id=_run_id(),
+            name="callback_name",
+        )
+
+        telemetry.workflow.assert_called_once_with(name="callback_name")
+
     def test_workflow_name_overridden_by_metadata(self):
         handler, telemetry, _, _ = _make_handler()
         run_id = _run_id()
