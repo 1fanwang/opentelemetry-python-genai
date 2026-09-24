@@ -55,22 +55,10 @@ _META_AGENT_SPAN = "otel_agent_span"
 _META_WORKFLOW_SPAN = "otel_workflow_span"
 _META_AGENT_NAME = "agent_name"
 _META_AGENT_TYPE = "agent_type"
-_META_AGENT_ID = "agent_id"
-_META_AGENT_DESCRIPTION = "agent_description"
-_META_WORKFLOW_NAME = "workflow_name"
 _META_LANGCHAIN_AGENT_NAME = "lc_agent_name"
 _META_LANGCHAIN_INTEGRATION = "ls_integration"
 _META_OTEL_TRACE = "otel_trace"
 _LANGCHAIN_CREATE_AGENT = "langchain_create_agent"
-_OPERATION_METADATA_KEYS = (
-    _META_AGENT_SPAN,
-    _META_WORKFLOW_SPAN,
-    _META_AGENT_NAME,
-    _META_AGENT_TYPE,
-    _META_AGENT_ID,
-    _META_AGENT_DESCRIPTION,
-    _META_WORKFLOW_NAME,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -97,33 +85,6 @@ def create_agent_graph_name(config: Any) -> str | None:
         return None
     name = typed_metadata.get(_META_LANGCHAIN_AGENT_NAME)
     return str(name) if name else None
-
-
-def operation_metadata(
-    metadata: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    """Return operation markers inherited by graph child callbacks."""
-    if not metadata:
-        return {}
-    return {
-        key: metadata[key]
-        for key in _OPERATION_METADATA_KEYS
-        if key in metadata
-    }
-
-
-def without_inherited_operation_metadata(
-    metadata: dict[str, Any] | None,
-    inherited_operation_metadata: tuple[Mapping[str, Any], ...] | None,
-) -> dict[str, Any] | None:
-    if not metadata or not inherited_operation_metadata:
-        return metadata
-    filtered_metadata = dict(metadata)
-    for inherited_metadata in inherited_operation_metadata:
-        for key, value in inherited_metadata.items():
-            if key in filtered_metadata and filtered_metadata[key] == value:
-                filtered_metadata.pop(key)
-    return filtered_metadata
 
 
 def resolve_agent_name(
@@ -177,6 +138,7 @@ def resolve_agent_name(
 def _has_agent_signals(
     metadata: dict[str, Any] | None,
     ancestor_agent_names: set[str] | None = None,
+    has_parent_agent: bool = False,
 ) -> bool:
     """Return True when metadata contains any signal that the chain is an agent.
 
@@ -193,7 +155,13 @@ def _has_agent_signals(
     )
     return bool(
         (metadata_name and not inherited_name)
-        or metadata.get(_META_AGENT_TYPE)
+        or (
+            not has_parent_agent
+            and (
+                metadata.get(_META_AGENT_TYPE)
+                or metadata.get(_META_AGENT_SPAN)
+            )
+        )
     )
 
 
@@ -296,7 +264,7 @@ def classify_chain_run(
     announced_agent: bool = False,
     ancestor_agent_names: set[str] | None = None,
     announced_workflow: bool = False,
-    inherited_operation_metadata: tuple[Mapping[str, Any], ...] | None = None,
+    has_parent_agent: bool = False,
 ) -> str | None:
     """Classify a ``on_chain_start`` callback into a semconv operation.
 
@@ -310,13 +278,9 @@ def classify_chain_run(
     4. Check remaining agent and workflow signals.
     5. Suppress unclassified chains.
     """
-    effective_metadata = without_inherited_operation_metadata(
-        metadata,
-        inherited_operation_metadata,
-    )
     agent_name = resolve_agent_name(
         serialized,
-        effective_metadata,
+        metadata,
         kwargs,
         declared_agent_name,
         ancestor_agent_names,
@@ -324,15 +288,10 @@ def classify_chain_run(
     )
 
     # 1. Suppress known noise.
-    if _should_ignore_chain(
-        effective_metadata,
-        agent_name,
-        kwargs,
-        declared_agent_name,
-    ):
+    if _should_ignore_chain(metadata, agent_name, kwargs, declared_agent_name):
         return None
 
-    # 2. Graph announcements come from the graph's own bound config.
+    # 2. Graph announcements identify roots despite inherited callback metadata.
     if announced_agent or declared_agent_name:
         return OperationName.INVOKE_AGENT
 
@@ -340,16 +299,22 @@ def classify_chain_run(
         return OperationName.INVOKE_WORKFLOW
 
     # 3. Explicit callback metadata.
-    if effective_metadata and effective_metadata.get(_META_AGENT_SPAN):
+    if (
+        metadata
+        and metadata.get(_META_AGENT_SPAN)
+        and _has_agent_signals(
+            metadata, ancestor_agent_names, has_parent_agent
+        )
+    ):
         return OperationName.INVOKE_AGENT
 
-    if effective_metadata and effective_metadata.get(_META_WORKFLOW_SPAN):
+    if metadata and metadata.get(_META_WORKFLOW_SPAN):
         return OperationName.INVOKE_WORKFLOW
 
     # 4. Remaining callback signals.
     if _has_agent_signals(
-        effective_metadata, ancestor_agent_names
-    ) or _detect_agent_name(agent_name, effective_metadata):
+        metadata, ancestor_agent_names, has_parent_agent
+    ) or _detect_agent_name(agent_name, metadata):
         return OperationName.INVOKE_AGENT
 
     if _looks_like_workflow(serialized, parent_run_id):

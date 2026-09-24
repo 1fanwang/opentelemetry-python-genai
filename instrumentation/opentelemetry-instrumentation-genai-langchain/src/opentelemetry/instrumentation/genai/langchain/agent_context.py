@@ -70,14 +70,25 @@ def _react_agent_name(graph: Any) -> str | None:
     return str(name) if name and name != "LangGraph" else ""
 
 
-def _bound_metadata(graph: Any) -> dict[str, Any]:
-    config = getattr(graph, "config", None)
-    if not isinstance(config, Mapping):
-        return {}
-    metadata = cast("Mapping[str, Any]", config).get("metadata")
-    if not isinstance(metadata, Mapping):
-        return {}
-    return dict(cast("Mapping[str, Any]", metadata))
+def _bound_metadata(graph: Any, config: Any) -> dict[str, Any]:
+    configs = [getattr(graph, "config", None)]
+    if isinstance(config, Mapping):
+        typed_config = cast("Mapping[str, Any]", config)
+        configurable = typed_config.get("configurable")
+        # Pregel passes the enclosing task's config to graph nodes. It does not
+        # declare the child graph's operation; its own bound config does.
+        if not (
+            isinstance(configurable, Mapping)
+            and "__pregel_task_id" in configurable
+        ):
+            configs.append(typed_config)
+    metadata: dict[str, Any] = {}
+    for item in configs:
+        if isinstance(item, Mapping):
+            values = cast("Mapping[str, Any]", item).get("metadata")
+            if isinstance(values, Mapping):
+                metadata.update(cast("Mapping[str, Any]", values))
+    return metadata
 
 
 def _agent_name(
@@ -101,7 +112,8 @@ def _agent_name(
     ):
         name = metadata.get("agent_name")
         return True, str(name) if name else None
-    return False, None
+    name = getattr(graph, "name", None)
+    return False, str(name) if name else None
 
 
 def _push(
@@ -135,7 +147,8 @@ def wrap_stream(
 
     ``Pregel.invoke`` runs through ``stream``, so this covers both entry points.
     """
-    metadata = _bound_metadata(instance)
+    config = kwargs.get("config", args[1] if len(args) > 1 else None)
+    metadata = _bound_metadata(instance, config)
     is_agent, name = _agent_name(instance, metadata)
     return _announce_at_stream_start(
         wrapped(*args, **kwargs),
@@ -155,7 +168,8 @@ def wrap_astream(
 
     ``Pregel.ainvoke`` runs through ``astream``, so this covers both entry points.
     """
-    metadata = _bound_metadata(instance)
+    config = kwargs.get("config", args[1] if len(args) > 1 else None)
+    metadata = _bound_metadata(instance, config)
     is_agent, name = _agent_name(instance, metadata)
     return _announce_at_astream_start(
         wrapped(*args, **kwargs),

@@ -46,8 +46,7 @@ async def test_graph_announcement_uses_invocation_metadata(
 
     if async_mode:
         assert [
-            chunk
-            async for chunk in wrap_astream(astream, graph, args, kwargs)
+            chunk async for chunk in wrap_astream(astream, graph, args, kwargs)
         ] == [1]
     else:
         assert list(wrap_stream(stream, graph, args, kwargs)) == [1]
@@ -77,3 +76,29 @@ def test_workflow_announcement_carries_compiled_name():
     assert list(wrap_stream(stream, graph, (), {})) == [1]
     assert announcements[0].is_agent is False
     assert announcements[0].name == "compiled_workflow"
+
+
+def test_graph_announcement_ignores_enclosing_task_metadata():
+    graph = SimpleNamespace(
+        name="child",
+        config={"metadata": {"workflow_name": "child_override"}},
+    )
+    inherited_config = {
+        "configurable": {"__pregel_task_id": "parent-task"},
+        "metadata": {
+            "agent_name": "parent",
+            "workflow_name": "parent_override",
+        },
+    }
+    announcements = []
+
+    def stream(*args, **kwargs):
+        announcements.append(claim_graph())
+        yield 1
+
+    assert list(
+        wrap_stream(stream, graph, (), {"config": inherited_config})
+    ) == [1]
+    assert announcements[0].is_agent is False
+    assert announcements[0].name == "child"
+    assert announcements[0].metadata == {"workflow_name": "child_override"}

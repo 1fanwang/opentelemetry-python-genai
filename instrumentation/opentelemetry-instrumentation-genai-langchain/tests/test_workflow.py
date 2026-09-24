@@ -310,21 +310,22 @@ async def test_nested_graph_with_bound_agent_metadata_is_agent(
         for span in operation_spans
         if span.attributes[GenAI.GEN_AI_OPERATION_NAME] == "invoke_workflow"
     ]
-    assert len(agent_spans) == 1
-    assert [span.name for span in workflow_spans] == [
-        "invoke_workflow LangGraph"
-    ]
-    assert agent_spans[0].name == agent_span_name
-    assert agent_spans[0].kind == SpanKind.INTERNAL
-    assert (
-        agent_spans[0].attributes[GenAI.GEN_AI_CONVERSATION_ID] == "thread-1"
+    assert len(agent_spans) == 2
+    assert not workflow_spans
+    assert {span.name for span in agent_spans} == {
+        agent_span_name,
+        "invoke_agent outer",
+    }
+    inner_span = next(
+        span for span in agent_spans if span.name == agent_span_name
     )
-    assert GenAI.GEN_AI_AGENT_ID not in agent_spans[0].attributes
+    assert inner_span.kind == SpanKind.INTERNAL
+    assert inner_span.attributes[GenAI.GEN_AI_CONVERSATION_ID] == "thread-1"
+    assert GenAI.GEN_AI_AGENT_ID not in inner_span.attributes
     assert (
-        agent_spans[0].attributes[GenAI.GEN_AI_AGENT_DESCRIPTION]
-        == "test agent"
+        inner_span.attributes[GenAI.GEN_AI_AGENT_DESCRIPTION] == "test agent"
     )
-    assert GenAI.GEN_AI_INPUT_MESSAGES in agent_spans[0].attributes
+    assert GenAI.GEN_AI_INPUT_MESSAGES in inner_span.attributes
 
 
 @pytest.mark.asyncio
@@ -446,12 +447,12 @@ def test_nested_graph_under_inherited_agent_metadata_is_workflow(
     span_names = {span.name for span in spans}
     assert "invoke_workflow named_subgraph" in span_names
     assert "invoke_agent named_subgraph" not in span_names
-    assert not [
-        span
+    assert [
+        span.name
         for span in spans
         if span.attributes
         and span.attributes.get(GenAI.GEN_AI_OPERATION_NAME) == "invoke_agent"
-    ]
+    ] == ["invoke_agent"]
     nested_span = next(
         span for span in spans if span.name == "invoke_workflow named_subgraph"
     )
@@ -923,20 +924,30 @@ async def test_nested_runtime_workflow_name_matches_parent(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    ("metadata", "expected_name"),
+    [
+        ({"agent_name": "runtime_agent"}, "invoke_agent runtime_agent"),
+        ({"agent_type": "worker"}, "invoke_agent"),
+        ({"otel_agent_span": True}, "invoke_agent"),
+    ],
+)
 async def test_runtime_agent_metadata_announces_only_graph_root(
     instrument_langchain: Any,
     span_exporter: InMemorySpanExporter,
     async_mode: bool,
+    metadata: dict[str, Any],
+    expected_name: str,
 ) -> None:
     graph = _graph(_respond, name="compiled_graph")
 
     with instrument_langchain():
         inputs = {"messages": [HumanMessage(content="hello")]}
-        config = {"metadata": {"agent_name": "runtime_agent"}}
+        config = {"metadata": metadata}
         if async_mode:
             await graph.ainvoke(inputs, config=config)
         else:
             graph.invoke(inputs, config=config)
 
     spans = span_exporter.get_finished_spans()
-    assert [span.name for span in spans] == ["invoke_agent runtime_agent"]
+    assert [span.name for span in spans] == [expected_name]
