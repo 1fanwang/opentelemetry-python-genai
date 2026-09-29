@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
@@ -25,10 +25,14 @@ _REACT_AGENT_MODULE = "langgraph.prebuilt.chat_agent_executor"
 @dataclass
 class _PendingGraph:
     name: str | None
-    is_agent: bool
-    metadata: dict[str, Any]
+    is_agent: bool = True
+    metadata: dict[str, Any] = field(
+        default_factory=lambda: cast("dict[str, Any]", {})
+    )
     claimed: bool = False
 
+
+_PendingAgent = _PendingGraph
 
 _pending: ContextVar[tuple[_PendingGraph, ...]] = ContextVar(
     "otel_genai_pending_graphs", default=()
