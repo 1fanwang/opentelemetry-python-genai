@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from opentelemetry.sdk._logs import Logger, LoggerProvider
+from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
     InMemoryLogRecordExporter,
     SimpleLogRecordProcessor,
@@ -281,10 +281,6 @@ class TestTelemetryHandlerEvents(unittest.TestCase):
         logs = self.log_exporter.get_finished_logs()
         self.assertEqual(len(logs), 0)
 
-    @unittest.skipUnless(
-        hasattr(Logger, "enabled"),
-        "The installed SDK has no log enablement API",
-    )
     @patch.dict(
         os.environ,
         {

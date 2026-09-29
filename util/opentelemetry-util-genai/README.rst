@@ -113,8 +113,8 @@ to ``true``, so events will be emitted automatically unless explicitly set to ``
 Native log enablement
 ^^^^^^^^^^^^^^^^^^^^^
 
-On SDKs that provide ``Logger.enabled``, inference event export also honors native
-log enablement. The check uses the invocation's context and event name. Disabling
+Inference event export honors native log enablement via ``Logger.enabled``.
+The check uses the invocation's context and event name. Disabling
 export does not disable spans, metrics, or completion hooks. Hooks still receive
 the event record when the content-capture configuration requests one.
 
@@ -155,7 +155,6 @@ provider has several processors, each must disable the event: the SDK considers 
 enabled when any processor accepts it.
 
 ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT=false`` still disables these events.
-SDKs without ``Logger.enabled`` retain the existing environment-variable behavior.
 
 Completion Hook / Upload
 ^^^^^^^^^^^^^^^^^^^^^^^^
