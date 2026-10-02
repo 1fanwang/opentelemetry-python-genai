@@ -55,19 +55,12 @@ try:
         )
         is not None
     )
-    _has_computer_tool_types = (
-        importlib.util.find_spec(
-            "openai.types.responses.response_computer_tool_call"
-        )
-        is not None
-    )
 except ImportError:
     Response = None
     ResponseFunctionToolCall = None
     ResponseInputText = None
     HAS_RESPONSES_TYPES = False
     _has_tool_search_types = False
-    _has_computer_tool_types = False
 
 _UTC_2026 = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
 
@@ -107,6 +100,48 @@ def _make_response(output=None, **overrides):
     }
     payload.update(overrides)
     return Response.model_validate(payload)
+
+
+def _response_accepts_output_item(item):
+    if not HAS_RESPONSES_TYPES:
+        return False
+
+    try:
+        _make_response(output=[item])
+    except Exception:  # pragma: no cover - capability probe
+        return False
+    return True
+
+
+_supports_computer_tool_call = _response_accepts_output_item(
+    {
+        "id": "cc_1",
+        "type": "computer_call",
+        "call_id": "call_1",
+        "status": "completed",
+        "pending_safety_checks": [],
+        "action": {
+            "type": "click",
+            "x": 1,
+            "y": 2,
+            "button": "left",
+        },
+    }
+)
+
+_supports_computer_tool_call_output = _response_accepts_output_item(
+    {
+        "id": "cco_1",
+        "type": "computer_call_output",
+        "call_id": "call_1",
+        "status": "completed",
+        "acknowledged_safety_checks": [],
+        "output": {
+            "type": "computer_screenshot",
+            "image_url": "https://example.com/s.png",
+        },
+    }
+)
 
 
 class _RawResponse:
@@ -795,7 +830,7 @@ def test_extract_output_messages_maps_parts_and_finish_reasons(loaded_module):
                 },
             },
             marks=pytest.mark.skipif(
-                not _has_computer_tool_types,
+                not _supports_computer_tool_call,
                 reason="openai SDK too old to support computer tool items",
             ),
         ),
@@ -929,7 +964,7 @@ def test_extract_output_messages_maps_server_tools(
                 "type": "computer",
             },
             marks=pytest.mark.skipif(
-                not _has_computer_tool_types,
+                not _supports_computer_tool_call_output,
                 reason="openai SDK too old to support computer tool items",
             ),
         ),
