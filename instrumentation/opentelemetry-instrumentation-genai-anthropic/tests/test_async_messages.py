@@ -154,7 +154,10 @@ def _partial_tool_use_stream_sse_body() -> bytes:
                 )
                 for character in arguments
             ],
-            _event("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            _event(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": 0},
+            ),
             _event(
                 "message_delta",
                 {
@@ -1060,10 +1063,7 @@ async def test_async_messages_stream_early_exit_marks_incomplete_tool_use(
     span = spans[0]
 
     assert received == '{"city": "Chica'
-    assert (
-        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS
-        not in span.attributes
-    )
+    assert GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in span.attributes
     assert span.attributes[GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS] == (
         "error",
     )
