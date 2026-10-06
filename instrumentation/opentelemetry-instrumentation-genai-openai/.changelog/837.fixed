@@ -1,1 +1,1 @@
-Record Responses computer_call items as server tool calls and results.
+Record Responses computer calls as client tool calls and replayed results as tool inputs.
