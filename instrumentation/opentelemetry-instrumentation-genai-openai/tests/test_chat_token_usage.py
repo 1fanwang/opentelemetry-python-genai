@@ -47,12 +47,9 @@ def instrumentation(
                 "prompt_tokens_details": {
                     "cached_tokens": 5,
                     "cache_write_tokens": 10,
-                    "text_tokens": 70,
-                    "image_tokens": 20,
                     "audio_tokens": 10,
                 },
                 "completion_tokens_details": {
-                    "text_tokens": 18,
                     "audio_tokens": 2,
                     "reasoning_tokens": 3,
                 },
@@ -87,12 +84,9 @@ def instrumentation(
                 "prompt_tokens_details": {
                     "cached_tokens": 0,
                     "cache_write_tokens": 0,
-                    "text_tokens": 0,
-                    "image_tokens": 0,
                     "audio_tokens": 0,
                 },
                 "completion_tokens_details": {
-                    "text_tokens": 0,
                     "audio_tokens": 0,
                     "reasoning_tokens": 0,
                 },
@@ -103,16 +97,27 @@ def instrumentation(
             {
                 "prompt_tokens_details": {
                     "cache_write_tokens": 10,
-                    "text_tokens": -1,
-                    "image_tokens": -2,
                     "audio_tokens": -3,
                 },
                 "completion_tokens_details": {
-                    "text_tokens": -1,
                     "audio_tokens": -2,
                 },
             },
             id="negative-modalities",
+        ),
+        pytest.param(
+            {
+                "prompt_tokens_details": {
+                    "text_tokens": 70,
+                    "image_tokens": 20,
+                    "audio_tokens": 10,
+                },
+                "completion_tokens_details": {
+                    "text_tokens": 18,
+                    "audio_tokens": 2,
+                },
+            },
+            id="unsupported-modalities-ignored",
         ),
     ],
 )
@@ -211,8 +216,6 @@ def assert_usage(
             {
                 "cached_tokens": "cache_read",
                 "cache_write_tokens": "cache_write",
-                "text_tokens": "text",
-                "image_tokens": "image",
                 "audio_tokens": "audio",
             },
         ),
@@ -220,7 +223,6 @@ def assert_usage(
             "completion_tokens_details",
             "output_tokens",
             {
-                "text_tokens": "text",
                 "audio_tokens": "audio",
                 "reasoning_tokens": "reasoning",
             },

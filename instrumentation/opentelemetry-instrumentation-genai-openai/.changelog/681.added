@@ -1,1 +1,1 @@
-Record cache-write and modality token usage from OpenAI Chat Completions responses and streams.
+Record cache-write and audio token usage from OpenAI Chat Completions responses and streams.

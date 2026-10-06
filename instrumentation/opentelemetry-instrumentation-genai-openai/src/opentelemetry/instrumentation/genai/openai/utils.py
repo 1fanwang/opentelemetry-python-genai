@@ -90,25 +90,23 @@ def set_chat_usage(
     invocation.set_input_tokens(
         entries=(
             (
-                modality,
+                "audio",
                 get_property_value(
                     obj=prompt_details,
-                    property_name=f"{modality}_tokens",
+                    property_name="audio_tokens",
                 ),
-            )
-            for modality in ("text", "image", "audio")
+            ),
         )
     )
     invocation.set_output_tokens(
         entries=(
             (
-                modality,
+                "audio",
                 get_property_value(
                     obj=completion_details,
-                    property_name=f"{modality}_tokens",
+                    property_name="audio_tokens",
                 ),
-            )
-            for modality in ("text", "audio")
+            ),
         )
     )
 
