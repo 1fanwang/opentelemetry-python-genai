@@ -220,9 +220,9 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             workflow = self._telemetry_handler.workflow(
                 name=workflow_name_override or workflow_name,
                 context=parent_context,
+                conversation_id=conversation_id,
                 _attach_to_context=self._attach_to_context,
             )
-            workflow.conversation_id = conversation_id
             if capture_content:
                 workflow.input_messages = make_input_message(inputs)
             self._invocation_manager.add_invocation_state(
@@ -254,9 +254,9 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     agent = self._telemetry_handler.invoke_local_agent(
                         agent_name=suggested_agent_name,
                         context=parent_context,
+                        conversation_id=conversation_id,
                         _attach_to_context=self._attach_to_context,
                     )
-                    agent.conversation_id = conversation_id
                     if capture_content:
                         agent.input_messages = make_input_message(inputs)
 
@@ -280,6 +280,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 agent = self._telemetry_handler.invoke_local_agent(
                     agent_name=None,
                     context=parent_context,
+                    conversation_id=conversation_id,
                     _attach_to_context=self._attach_to_context,
                 )
                 agent.input_messages = make_input_message(inputs)
@@ -440,9 +441,9 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             provider,
             request_model=request_model,
             context=parent_context,
+            conversation_id=_conversation_id(metadata),
             _attach_to_context=self._attach_to_context,
         )
-        llm_invocation.conversation_id = _conversation_id(metadata)
         llm_invocation.input_messages = input_messages
         llm_invocation.top_p = top_p
         llm_invocation.top_k = top_k
@@ -860,6 +861,12 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
 
         invocation.fail(error)
         self._invocation_manager.delete_invocation_state(run_id=run_id)
+
+    def on_interrupt(self, event: Any) -> None:
+        """Accept LangGraph's graph interrupt event without recording it."""
+
+    def on_resume(self, event: Any) -> None:
+        """Accept LangGraph's graph resume event without recording it."""
 
     def _find_agent_context(
         self, run_id: UUID | None
