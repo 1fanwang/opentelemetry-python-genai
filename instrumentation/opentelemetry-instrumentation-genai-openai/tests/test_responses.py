@@ -212,13 +212,10 @@ def _skip_without_computer_tool_cassette(
     request: pytest.FixtureRequest,
 ) -> None:
     cassette_path = (
-        Path(__file__).parent
-        / "cassettes"
-        / f"{request.node.name}.yaml"
+        Path(__file__).parent / "cassettes" / f"{request.node.name}.yaml"
     )
-    if (
-        not cassette_path.is_file()
-        and not request.config.getoption("--vcr-record")
+    if not cassette_path.is_file() and not request.config.getoption(
+        "--vcr-record"
     ):
         pytest.skip(
             "No provider cassette; rerun with --vcr-record=once to record it"
@@ -1469,7 +1466,9 @@ def test_responses_create_captures_computer_tool_loop(
     _skip_if_not_latest()
     _skip_without_computer_tool_cassette(request)
 
-    history = [{"role": "user", "content": "Take a screenshot of the current page."}]
+    history = [
+        {"role": "user", "content": "Take a screenshot of the current page."}
+    ]
     with vcr.use_cassette(f"{request.node.name}.yaml"):
         first_response = openai_client.responses.create(
             model="gpt-6-luna",

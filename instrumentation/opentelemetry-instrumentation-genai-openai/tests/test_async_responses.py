@@ -1341,7 +1341,9 @@ async def test_async_responses_create_captures_computer_tool_loop(
     _skip_if_not_latest()
     _skip_without_computer_tool_cassette(request)
 
-    history = [{"role": "user", "content": "Take a screenshot of the current page."}]
+    history = [
+        {"role": "user", "content": "Take a screenshot of the current page."}
+    ]
     with vcr.use_cassette(f"{request.node.name}.yaml"):
         first_response = await async_openai_client.responses.create(
             model="gpt-6-luna",
