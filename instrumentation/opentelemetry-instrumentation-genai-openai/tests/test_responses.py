@@ -116,10 +116,14 @@ except ImportError:
     ComputerCallOutput = None
     _has_computer_call_output_input_type = False
 
-_has_computer_tool_type = (
-    importlib.util.find_spec("openai.types.responses.computer_tool_param")
-    is not None
-)
+_has_computer_tool_type: bool
+try:
+    _has_computer_tool_type = (
+        importlib.util.find_spec("openai.types.responses.computer_tool_param")
+        is not None
+    )
+except ImportError:
+    _has_computer_tool_type = False
 
 _COMPUTER_CALL_RESPONSE_OUTPUT_ADAPTER: TypeAdapter[object] | None
 try:
