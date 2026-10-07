@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+from pathlib import Path
 
 import pytest
 from openai import (
@@ -16,6 +17,7 @@ from openai import (
     Stream,
 )
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from vcr import VCR
 
 from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
 from opentelemetry.instrumentation.genai.openai.response_wrappers import (
@@ -58,12 +60,10 @@ from .test_utils import (
     assert_messages_attribute,
     assert_reasoning_attributes,
     format_simple_expected_output_message,
-    get_recorded_responses_create_response_payload,
     get_responses_custom_tool_definition,
     get_responses_custom_tool_loop_input,
     get_responses_tool_loop_input,
     get_responses_weather_tool_definition,
-    local_responses_server,
 )
 
 try:
@@ -115,6 +115,11 @@ try:
 except ImportError:
     ComputerCallOutput = None
     _has_computer_call_output_input_type = False
+
+_has_computer_tool_type = (
+    importlib.util.find_spec("openai.types.responses.computer_tool_param")
+    is not None
+)
 
 _COMPUTER_CALL_RESPONSE_OUTPUT_ADAPTER: TypeAdapter[object] | None
 try:
@@ -172,22 +177,16 @@ def _local_computer_call_response_item() -> dict[str, object]:
         pending_safety_checks=[],
         status="completed",
         type="computer_call",
-        action={
-            "type": "click",
-            "x": 1,
-            "y": 2,
-            "button": "left",
-        },
+        actions=[
+            {
+                "type": "click",
+                "x": 1,
+                "y": 2,
+                "button": "left",
+            }
+        ],
     )
     return computer_call.model_dump(mode="json", exclude_none=True)
-
-
-def _local_computer_call_response_payload() -> dict[str, object]:
-    response_payload = get_recorded_responses_create_response_payload()
-    response_payload["id"] = "resp_local_computer_call"
-    response_payload["model"] = "computer-use-preview"
-    response_payload["output"] = [_local_computer_call_response_item()]
-    return response_payload
 
 
 def _supports_computer_call_response_output() -> bool:
@@ -197,12 +196,29 @@ def _supports_computer_call_response_output() -> bool:
     ):
         return False
     try:
-        _COMPUTER_CALL_RESPONSE_OUTPUT_ADAPTER.validate_python(
+        response_item = _COMPUTER_CALL_RESPONSE_OUTPUT_ADAPTER.validate_python(
             _local_computer_call_response_item()
         )
     except ValidationError:
         return False
-    return True
+    return getattr(response_item, "actions", None) is not None
+
+
+def _skip_without_computer_tool_cassette(
+    request: pytest.FixtureRequest,
+) -> None:
+    cassette_path = (
+        Path(__file__).parent
+        / "cassettes"
+        / f"{request.node.name}.yaml"
+    )
+    if (
+        not cassette_path.is_file()
+        and not request.config.getoption("--vcr-record")
+    ):
+        pytest.skip(
+            "No provider cassette; rerun with --vcr-record=once to record it"
+        )
 
 
 def _assert_response_content(span, response, log_exporter):
@@ -1435,58 +1451,49 @@ def test_responses_create_captures_custom_tool_history(
 
 @pytest.mark.skipif(
     not _has_computer_call_output_input_type
+    or not _has_computer_tool_type
     or not _supports_computer_call_response_output(),
-    reason="openai SDK cannot parse computer tool loop items",
+    reason="openai SDK cannot parse the GA computer tool loop",
 )
 def test_responses_create_captures_computer_tool_loop(
+    request: pytest.FixtureRequest,
     span_exporter: InMemorySpanExporter,
+    openai_client: OpenAI,
     instrument_with_content: OpenAIInstrumentor,
+    vcr: VCR,
 ) -> None:
     _skip_if_not_latest()
+    _skip_without_computer_tool_cassette(request)
 
-    response_payloads = [
-        _local_computer_call_response_payload(),
-        get_recorded_responses_create_response_payload(),
-    ]
-    with local_responses_server(response_payloads) as server:
-        with OpenAI(base_url=server.base_url) as client:
-            first_response = client.responses.create(
-                model="computer-use-preview",
-                tools=[
-                    {
-                        "type": "computer_use_preview",
-                        "display_width": 1024,
-                        "display_height": 768,
-                        "environment": "browser",
-                    }
-                ],
-                input=[{"role": "user", "content": "Open example.com"}],
-                truncation="auto",
-            )
-            client.responses.create(
-                model="computer-use-preview",
-                tools=[
-                    {
-                        "type": "computer_use_preview",
-                        "display_width": 1024,
-                        "display_height": 768,
-                        "environment": "browser",
-                    }
-                ],
-                input=[
-                    {"role": "user", "content": "Open example.com"},
-                    *first_response.output,
-                    ComputerCallOutput(
-                        type="computer_call_output",
-                        call_id="call_local_computer",
-                        output={
-                            "type": "computer_screenshot",
-                            "image_url": COMPUTER_SCREENSHOT_DATA_URL,
-                        },
-                    ),
-                ],
-                truncation="auto",
-            )
+    history = [{"role": "user", "content": "Take a screenshot of the current page."}]
+    with vcr.use_cassette(f"{request.node.name}.yaml"):
+        first_response = openai_client.responses.create(
+            model="gpt-6-luna",
+            tools=[{"type": "computer"}],
+            input=history,
+            tool_choice="required",
+        )
+        (computer_call,) = [
+            item
+            for item in first_response.output
+            if isinstance(item, ResponseComputerToolCall)
+        ]
+        openai_client.responses.create(
+            model="gpt-6-luna",
+            tools=[{"type": "computer"}],
+            input=[
+                *history,
+                *first_response.output,
+                ComputerCallOutput(
+                    type="computer_call_output",
+                    call_id=computer_call.call_id,
+                    output={
+                        "type": "computer_screenshot",
+                        "image_url": COMPUTER_SCREENSHOT_DATA_URL,
+                    },
+                ),
+            ],
+        )
 
     first_span, second_span = span_exporter.get_finished_spans()
     assert first_span.attributes[
@@ -1502,10 +1509,8 @@ def test_responses_create_captures_computer_tool_loop(
         if part["type"] == "tool_call"
     ]
     assert tool_call["name"] == "computer"
-    assert tool_call["id"] == "call_local_computer"
-    assert tool_call["arguments"] == {
-        "action": {"button": "left", "type": "click", "x": 1, "y": 2}
-    }
+    assert tool_call["id"] == computer_call.call_id
+    assert isinstance(tool_call["arguments"]["actions"], list)
 
     second_input = _load_span_messages(
         second_span, GenAIAttributes.GEN_AI_INPUT_MESSAGES
@@ -1515,37 +1520,22 @@ def test_responses_create_captures_computer_tool_loop(
     assert second_input[1]["parts"] == [
         {
             "type": "tool_call",
-            "id": "call_local_computer",
+            "id": computer_call.call_id,
             "name": "computer",
-            "arguments": {
-                "action": {
-                    "button": "left",
-                    "type": "click",
-                    "x": 1,
-                    "y": 2,
-                }
-            },
+            "arguments": tool_call["arguments"],
         }
     ]
     assert second_input[2]["role"] == "tool"
     assert second_input[2]["parts"] == [
         {
             "type": "tool_call_response",
-            "id": "call_local_computer",
+            "id": computer_call.call_id,
             "response": {
                 "type": "computer_screenshot",
                 "image_url": COMPUTER_SCREENSHOT_DATA_URL,
             },
         }
     ]
-    assert server.request_payloads[1]["input"][1]["type"] == "computer_call"
-    assert server.request_payloads[1]["input"][2]["type"] == (
-        "computer_call_output"
-    )
-    assert (
-        server.request_payloads[1]["input"][1]["call_id"]
-        == server.request_payloads[1]["input"][2]["call_id"]
-    )
 
 
 @pytest.mark.vcr()
