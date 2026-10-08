@@ -43,95 +43,143 @@ def instrumentation(
 @pytest.fixture(
     params=[
         pytest.param(
-            {
-                "prompt_tokens_details": {
-                    "cached_tokens": 5,
-                    "cache_write_tokens": 10,
-                    "audio_tokens": 10,
+            (
+                {
+                    "prompt_tokens_details": {
+                        "cached_tokens": 5,
+                        "cache_write_tokens": 10,
+                        "audio_tokens": 10,
+                    },
+                    "completion_tokens_details": {
+                        "audio_tokens": 2,
+                        "reasoning_tokens": 3,
+                    },
                 },
-                "completion_tokens_details": {
-                    "audio_tokens": 2,
-                    "reasoning_tokens": 3,
+                {
+                    GenAIAttributes.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS: 5,
+                    "gen_ai.usage.cache_write.input_tokens": 10,
+                    "gen_ai.usage.audio.input_tokens": 10,
+                    "gen_ai.usage.audio.output_tokens": 2,
+                    GenAIAttributes.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS: 3,
                 },
-            },
+            ),
             id="all-details",
         ),
         pytest.param(
-            {"prompt_tokens_details": {"audio_tokens": 10}},
+            (
+                {"prompt_tokens_details": {"audio_tokens": 10}},
+                {"gen_ai.usage.audio.input_tokens": 10},
+            ),
             id="partial-details",
         ),
         pytest.param(
-            {"prompt_tokens_details": {"cache_write_tokens": 10}},
+            (
+                {"prompt_tokens_details": {"cache_write_tokens": 10}},
+                {"gen_ai.usage.cache_write.input_tokens": 10},
+            ),
             id="cache-write-only",
         ),
-        pytest.param({}, id="absent-details"),
+        pytest.param(({}, {}), id="absent-details"),
         pytest.param(
-            {
-                "prompt_tokens_details": {},
-                "completion_tokens_details": {},
-            },
+            (
+                {
+                    "prompt_tokens_details": {},
+                    "completion_tokens_details": {},
+                },
+                {},
+            ),
             id="empty-details",
         ),
         pytest.param(
-            {
-                "prompt_tokens_details": None,
-                "completion_tokens_details": None,
-            },
+            (
+                {
+                    "prompt_tokens_details": None,
+                    "completion_tokens_details": None,
+                },
+                {},
+            ),
             id="null-details",
         ),
         pytest.param(
-            {
-                "prompt_tokens_details": {
-                    "cached_tokens": 0,
-                    "cache_write_tokens": 0,
-                    "audio_tokens": 0,
+            (
+                {
+                    "prompt_tokens_details": {
+                        "cached_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "audio_tokens": 0,
+                    },
+                    "completion_tokens_details": {
+                        "audio_tokens": 0,
+                        "reasoning_tokens": 0,
+                    },
                 },
-                "completion_tokens_details": {
-                    "audio_tokens": 0,
-                    "reasoning_tokens": 0,
-                },
-            },
+                {},
+            ),
             id="zero-details",
         ),
         pytest.param(
-            {
-                "prompt_tokens_details": {
-                    "cache_write_tokens": 10,
-                    "audio_tokens": -3,
+            (
+                {
+                    "prompt_tokens_details": {
+                        "cache_write_tokens": 10,
+                        "audio_tokens": -3,
+                    },
+                    "completion_tokens_details": {
+                        "audio_tokens": -2,
+                    },
                 },
-                "completion_tokens_details": {
-                    "audio_tokens": -2,
+                {
+                    "gen_ai.usage.cache_write.input_tokens": 10,
                 },
-            },
+            ),
             id="negative-modalities",
         ),
         pytest.param(
-            {
-                "prompt_tokens_details": {
-                    "text_tokens": 70,
-                    "image_tokens": 20,
-                    "audio_tokens": 10,
+            (
+                {
+                    "prompt_tokens_details": {
+                        "text_tokens": 70,
+                        "image_tokens": 20,
+                        "audio_tokens": 10,
+                    },
+                    "completion_tokens_details": {
+                        "text_tokens": 18,
+                        "audio_tokens": 2,
+                    },
                 },
-                "completion_tokens_details": {
-                    "text_tokens": 18,
-                    "audio_tokens": 2,
+                {
+                    "gen_ai.usage.audio.input_tokens": 10,
+                    "gen_ai.usage.audio.output_tokens": 2,
                 },
-            },
+            ),
             id="unsupported-modalities-ignored",
         ),
     ],
 )
-def usage(request: pytest.FixtureRequest) -> dict[str, Any]:
-    return {
-        "prompt_tokens": 100,
-        "completion_tokens": 20,
-        "total_tokens": 120,
-        **request.param,
-    }
+def usage_case(
+    request: pytest.FixtureRequest,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    details, expected_details = request.param
+    return (
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            **details,
+        },
+        {
+            GenAIAttributes.GEN_AI_USAGE_INPUT_TOKENS: 100,
+            GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS: 20,
+            **expected_details,
+        },
+    )
 
 
 @pytest.fixture
-def chat_completion(usage: dict[str, Any]) -> ChatCompletion:
+def chat_completion(
+    usage_case: tuple[dict[str, Any], dict[str, int]],
+) -> ChatCompletion:
+    usage, _ = usage_case
     response: dict[str, Any] = {
         "id": "chatcmpl-usage",
         "created": 1,
@@ -196,44 +244,13 @@ def assert_usage_is_buffered(invocation: InferenceInvocation) -> None:
 
 
 def assert_usage(
-    span_exporter: InMemorySpanExporter, usage: dict[str, Any]
+    span_exporter: InMemorySpanExporter, expected: dict[str, int]
 ) -> None:
     (span,) = span_exporter.get_finished_spans()
     assert span.attributes is not None
-    assert span.attributes[GenAIAttributes.GEN_AI_USAGE_INPUT_TOKENS] == 100
-    assert span.attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 20
     assert span.attributes[GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS] == (
         "stop",
     )
-    expected: dict[str, int] = {
-        GenAIAttributes.GEN_AI_USAGE_INPUT_TOKENS: 100,
-        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS: 20,
-    }
-    for field, suffix, mapping in (
-        (
-            "prompt_tokens_details",
-            "input_tokens",
-            {
-                "cached_tokens": "cache_read",
-                "cache_write_tokens": "cache_write",
-                "audio_tokens": "audio",
-            },
-        ),
-        (
-            "completion_tokens_details",
-            "output_tokens",
-            {
-                "audio_tokens": "audio",
-                "reasoning_tokens": "reasoning",
-            },
-        ),
-    ):
-        details = usage.get(field)
-        if isinstance(details, dict):
-            for name, attribute in mapping.items():
-                value: object = details.get(name)
-                if type(value) is int and value > 0:
-                    expected[f"gen_ai.usage.{attribute}.{suffix}"] = value
     actual = {
         key: value
         for key, value in span.attributes.items()
@@ -255,7 +272,7 @@ def test_chat_detailed_token_usage(
     chat_chunks: list[ChatCompletionChunk],
     streaming: bool,
     drain_stream: bool,
-    usage: dict[str, Any],
+    usage_case: tuple[dict[str, Any], dict[str, int]],
     span_exporter: InMemorySpanExporter,
 ) -> None:
     result: ChatCompletion | MagicMock = chat_completion
@@ -287,7 +304,8 @@ def test_chat_detailed_token_usage(
     else:
         assert response == chat_completion
 
-    assert_usage(span_exporter=span_exporter, usage=usage)
+    _, expected = usage_case
+    assert_usage(span_exporter=span_exporter, expected=expected)
 
 
 @pytest.mark.asyncio
@@ -303,7 +321,7 @@ async def test_async_chat_detailed_token_usage(
     chat_chunks: list[ChatCompletionChunk],
     streaming: bool,
     drain_stream: bool,
-    usage: dict[str, Any],
+    usage_case: tuple[dict[str, Any], dict[str, int]],
     span_exporter: InMemorySpanExporter,
 ) -> None:
     result: ChatCompletion | MagicMock = chat_completion
@@ -335,4 +353,5 @@ async def test_async_chat_detailed_token_usage(
     else:
         assert response == chat_completion
 
-    assert_usage(span_exporter=span_exporter, usage=usage)
+    _, expected = usage_case
+    assert_usage(span_exporter=span_exporter, expected=expected)

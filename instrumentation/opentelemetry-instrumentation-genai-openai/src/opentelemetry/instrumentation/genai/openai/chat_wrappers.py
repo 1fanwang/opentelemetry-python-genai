@@ -108,7 +108,7 @@ class _ChatStreamMixin:
         self._set_response_model(chunk)
         self._set_response_service_tier(chunk)
         self._build_streaming_response(chunk)
-        usage: CompletionUsage | None = getattr(chunk, "usage", None)
+        usage: CompletionUsage | None = chunk.usage
         if usage is not None:
             self._self_usage = usage
 
