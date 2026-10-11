@@ -121,7 +121,6 @@ class _MessagesStreamMixin(Generic[ResponseFormatT]):
     _self_block_states: dict[int, StreamBlockState]
     _self_seen_message_stop: bool
     _self_stop_reason: str | None
-    _self_output_tokens: int | None
 
     def _is_incomplete_response(self) -> bool:
         stop_reason = self._self_stop_reason
@@ -174,8 +173,6 @@ class _MessagesStreamMixin(Generic[ResponseFormatT]):
             self._self_message,
             self._self_capture_content and not incomplete_response,
         )
-        if incomplete_response or self._self_output_tokens is not None:
-            self._self_invocation.output_tokens = self._self_output_tokens
         if incomplete_response:
             self._self_invocation.finish_reasons = ["error"]
             if (
@@ -295,11 +292,6 @@ class _MessagesStreamMixin(Generic[ResponseFormatT]):
                 stop_reason = getattr(delta, "stop_reason", None)
                 if isinstance(stop_reason, str):
                     self._self_stop_reason = stop_reason
-            usage = getattr(chunk, "usage", None)
-            if usage is not None:
-                output_tokens = getattr(usage, "output_tokens", None)
-                if isinstance(output_tokens, int):
-                    self._self_output_tokens = output_tokens
             return
 
         if chunk_type == "message_stop":
@@ -330,7 +322,6 @@ class MessagesStreamWrapper(
         self._self_block_states = {}
         self._self_seen_message_stop = False
         self._self_stop_reason = None
-        self._self_output_tokens = None
 
     @property
     def response(self) -> _http_lib.Response:
@@ -375,7 +366,6 @@ class AsyncMessagesStreamWrapper(
         self._self_block_states = {}
         self._self_seen_message_stop = False
         self._self_stop_reason = None
-        self._self_output_tokens = None
 
     @property
     def response(self) -> _http_lib.Response:

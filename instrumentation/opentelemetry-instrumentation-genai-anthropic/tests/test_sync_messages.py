@@ -1184,17 +1184,22 @@ def test_sync_messages_stream_api_error(
 
 
 @pytest.mark.vcr()
+@pytest.mark.cassette("test_sync_messages_stream_interrupted_mid_iteration")
+@pytest.mark.parametrize(
+    "capture_fixture", ["instrument_no_content", "instrument_with_content"]
+)
 def test_sync_messages_stream_interrupted_mid_iteration(
     request,
     span_exporter,
     anthropic_client,
-    instrument_no_content,
+    capture_fixture,
     monkeypatch,
 ):
     """Mid-stream network errors from Messages.stream propagate and record error."""
-    _skip_if_cassette_missing_and_no_real_key(request)
+    request.getfixturevalue(capture_fixture)
     model = "claude-sonnet-4-20250514"
     messages = [{"role": "user", "content": "Say hello in one word."}]
+    error = ConnectionError("connection reset during stream")
 
     class ErrorInjectingStreamDelegate:
         def __init__(self, inner):
@@ -1206,7 +1211,7 @@ def test_sync_messages_stream_interrupted_mid_iteration(
 
         def __next__(self):
             if self._count == 1:
-                raise ConnectionError("connection reset during stream")
+                raise error
             self._count += 1
             return next(self._inner)
 
@@ -1218,12 +1223,22 @@ def test_sync_messages_stream_interrupted_mid_iteration(
 
     with pytest.raises(
         ConnectionError, match="connection reset during stream"
-    ):
+    ) as exc_info:
         with anthropic_client.messages.stream(
             model=model,
             max_tokens=100,
             messages=messages,
         ) as stream:
+            for event in stream:
+                if capture_fixture == "instrument_no_content":
+                    assert not stream._self_block_states
+                if event.type == "text":
+                    break
+            snapshot = stream.current_message_snapshot
+            before_error = snapshot.model_dump()
+            assert snapshot.content[0].text == "Hello!"
+            assert snapshot.stop_reason is None
+            assert span_exporter.get_finished_spans() == ()
             monkeypatch.setattr(
                 stream,
                 "stream",
@@ -1232,6 +1247,8 @@ def test_sync_messages_stream_interrupted_mid_iteration(
             for _ in stream:
                 pass
 
+    assert exc_info.value is error
+    assert snapshot.model_dump() == before_error
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
     span = spans[0]
@@ -1240,27 +1257,65 @@ def test_sync_messages_stream_interrupted_mid_iteration(
 
 
 @pytest.mark.vcr()
+@pytest.mark.cassette("test_sync_messages_stream_closed_early_by_caller")
+@pytest.mark.parametrize(
+    "capture_fixture", ["instrument_no_content", "instrument_with_content"]
+)
+@pytest.mark.parametrize("stop_at", ["message_start", "text", "message_delta"])
 def test_sync_messages_stream_closed_early_by_caller(
-    request, span_exporter, anthropic_client, instrument_no_content
+    request, span_exporter, anthropic_client, capture_fixture, stop_at
 ):
-    """Caller-closing Messages.stream early finalizes the span without error."""
-    _skip_if_cassette_missing_and_no_real_key(request)
+    """Closing preserves SDK data and records the latest reported usage."""
+    request.getfixturevalue(capture_fixture)
     model = "claude-sonnet-4-20250514"
     messages = [{"role": "user", "content": "Say hello in one word."}]
+    output_tokens = 5 if stop_at == "message_delta" else 2
+    finish_reason = "stop" if stop_at == "message_delta" else "error"
 
     with anthropic_client.messages.stream(
         model=model,
         max_tokens=100,
         messages=messages,
     ) as stream:
-        next(stream)
+        for event in stream:
+            if capture_fixture == "instrument_no_content":
+                assert not stream._self_block_states
+            if event.type == stop_at:
+                break
+        snapshot = stream.current_message_snapshot
+        before_close = snapshot.model_dump()
+        assert snapshot.usage.output_tokens == output_tokens
+        assert span_exporter.get_finished_spans() == ()
         stream.close()
 
+    assert snapshot.model_dump() == before_close
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
     span = spans[0]
-    assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_MODEL] == model
+    assert_span_attributes(
+        span,
+        request_model=model,
+        input_tokens=13,
+        output_tokens=output_tokens,
+        finish_reasons=[finish_reason],
+    )
     assert ErrorAttributes.ERROR_TYPE not in span.attributes
+    if (
+        capture_fixture == "instrument_with_content"
+        and stop_at != "message_start"
+    ):
+        assert _load_span_messages(
+            span, GenAIAttributes.GEN_AI_OUTPUT_MESSAGES
+        ) == [
+            {
+                "role": "assistant",
+                "parts": [{"type": "text", "content": "Hello!"}],
+                "finish_reason": finish_reason,
+                "name": None,
+            }
+        ]
+    else:
+        assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in span.attributes
 
 
 @pytest.mark.vcr()
@@ -1290,6 +1345,36 @@ def test_sync_messages_create_streaming_iteration(
     # Verify span has response attributes from streaming
     assert GenAIAttributes.GEN_AI_RESPONSE_ID in span.attributes
     assert GenAIAttributes.GEN_AI_RESPONSE_MODEL in span.attributes
+
+
+@pytest.mark.vcr()
+@pytest.mark.cassette("test_sync_messages_create_streaming")
+@pytest.mark.parametrize("consume_start", [False, True])
+def test_sync_messages_create_streaming_early_exit_preserves_usage(
+    span_exporter, anthropic_client, instrument_no_content, consume_start
+):
+    with anthropic_client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "Say hello in one word."}],
+        stream=True,
+    ) as stream:
+        if consume_start:
+            event = next(stream)
+            assert event.type == "message_start"
+            assert event.message.usage.output_tokens == 2
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    attrs = spans[0].attributes
+    if consume_start:
+        assert attrs[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 2
+        assert attrs[GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS] == (
+            "error",
+        )
+    else:
+        assert GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in attrs
+        assert GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS not in attrs
 
 
 @pytest.mark.vcr()
@@ -1497,7 +1582,7 @@ def test_sync_messages_stream_early_exit_marks_incomplete_tool_use(
     span = spans[0]
 
     assert received == '{"city": "Chica'
-    assert GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in span.attributes
+    assert span.attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 0
     assert span.attributes[GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS] == (
         "error",
     )
@@ -1520,83 +1605,26 @@ def test_sync_messages_stream_early_exit_marks_incomplete_tool_use(
     ]
 
 
-@pytest.mark.parametrize(
-    "capture_fixture", ["instrument_no_content", "instrument_with_content"]
-)
-def test_sync_messages_stream_early_exit_preserves_sdk_snapshot(
-    request, span_exporter, capture_fixture
-):
-    request.getfixturevalue(capture_fixture)
-
-    def respond(_request):
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=_partial_tool_use_stream_sse_body(),
-        )
-
-    with Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
-    ) as client:
-        with client.messages.stream(
-            model="claude-sonnet-4-20250514",
-            max_tokens=256,
-            messages=[{"role": "user", "content": "What is the weather?"}],
-        ) as stream:
-            next(stream)
-            snapshot = stream.current_message_snapshot
-            before_close = snapshot.model_dump()
-            assert snapshot.usage.output_tokens == 0
-
-    assert snapshot.model_dump() == before_close
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    assert (
-        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in spans[0].attributes
-    )
-    assert spans[0].attributes[
-        GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS
-    ] == ("error",)
-
-
+@pytest.mark.vcr()
+@pytest.mark.cassette("test_sync_messages_stream")
 def test_sync_messages_stream_without_content_does_not_buffer_blocks(
-    span_exporter, instrument_no_content
+    span_exporter, anthropic_client, instrument_no_content
 ):
-    def respond(_request):
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=_partial_tool_use_stream_sse_body(),
-        )
-
-    with Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
-    ) as client:
-        with client.messages.stream(
-            model="claude-sonnet-4-20250514",
-            max_tokens=256,
-            messages=[{"role": "user", "content": "What is the weather?"}],
-            tools=[_WEATHER_TOOL],
-        ) as stream:
-            for _ in stream:
-                assert not stream._self_block_states
-            assert stream.current_message_snapshot.content[0].input == {
-                "city": "Chicago",
-                "unit": "celsius",
-            }
+    with anthropic_client.messages.stream(
+        model="claude-sonnet-4-20250514",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "Say hello in one word."}],
+    ) as stream:
+        for _ in stream:
+            assert not stream._self_block_states
+        assert stream.current_message_snapshot.content[0].text == "Hello!"
 
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
-    assert (
-        spans[0].attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 10
-    )
+    assert spans[0].attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 5
     assert spans[0].attributes[
         GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS
-    ] == ("tool_call",)
+    ] == ("stop",)
     assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in spans[0].attributes
 
 
@@ -2860,13 +2888,15 @@ def test_sync_messages_text_stream_early_exit_captures_partial_text(
         for text in stream.text_stream:
             break
         assert text == "Hello!"
-        assert stream.current_message_snapshot.stop_reason is None
+        snapshot = stream.current_message_snapshot
+        before_close = snapshot.model_dump()
+        assert snapshot.stop_reason is None
+        assert snapshot.usage.output_tokens == 2
 
+    assert snapshot.model_dump() == before_close
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
-    assert (
-        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in spans[0].attributes
-    )
+    assert spans[0].attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 2
     assert _load_span_messages(
         spans[0], GenAIAttributes.GEN_AI_OUTPUT_MESSAGES
     ) == [
