@@ -221,6 +221,9 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             ancestor_agent_names=ancestor_agent_names,
             announced_workflow=announced_workflow,
             has_parent_agent=has_parent_agent,
+            graph_metadata=(
+                graph_announcement.metadata if graph_announcement else None
+            ),
         )
         parent_context = self._invocation_manager.get_parent_context(
             parent_run_id

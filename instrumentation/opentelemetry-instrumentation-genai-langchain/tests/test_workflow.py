@@ -459,6 +459,123 @@ def test_nested_graph_under_inherited_agent_metadata_is_workflow(
     assert nested_span.parent is not None
 
 
+def _outer_graph_running(inner: Any, node_metadata: dict[str, Any]) -> Any:
+    builder = StateGraph(_State)
+    builder.add_node("step", inner, metadata=node_metadata)
+    builder.add_edge(START, "step")
+    builder.add_edge("step", END)
+    return builder.compile(name="outer_graph")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+async def test_nested_workflow_ignores_agent_opt_out_inherited_from_node(
+    instrument_langchain: Any,
+    span_exporter: InMemorySpanExporter,
+    async_mode: bool,
+) -> None:
+    graph = _outer_graph_running(
+        _graph(_respond, name="inner_graph"),
+        {"otel_agent_span": False},
+    )
+
+    with instrument_langchain():
+        inputs = {"messages": [HumanMessage(content="hello")]}
+        if async_mode:
+            await graph.ainvoke(inputs)
+        else:
+            graph.invoke(inputs)
+
+    spans_by_name = {
+        span.name: span for span in _workflow_spans(span_exporter)
+    }
+    assert set(spans_by_name) == {
+        "invoke_workflow outer_graph",
+        "invoke_workflow inner_graph",
+    }
+    if async_mode:
+        pytest.xfail(
+            "nested spans are not parented in async: "
+            "https://github.com/open-telemetry/"
+            "opentelemetry-python-genai/issues/513"
+        )
+    assert (
+        spans_by_name["invoke_workflow inner_graph"].parent.span_id
+        == spans_by_name["invoke_workflow outer_graph"].context.span_id
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    "build_graph",
+    [
+        pytest.param(
+            lambda: _graph(
+                _graph(_respond, name="inner_graph").with_config(
+                    {"metadata": {"otel_trace": False}}
+                ),
+                name="outer_graph",
+            ),
+            id="bound-trace",
+        ),
+        pytest.param(
+            lambda: _graph(
+                _graph(_respond, name="inner_graph").with_config(
+                    {"metadata": {"otel_agent_span": False}}
+                ),
+                name="outer_graph",
+            ),
+            id="bound-agent-span",
+        ),
+        pytest.param(
+            lambda: _outer_graph_running(
+                _graph(_respond, name="inner_graph"),
+                {"otel_trace": False},
+            ),
+            id="inherited-trace",
+        ),
+    ],
+)
+async def test_nested_workflow_explicit_opt_out_suppresses(
+    instrument_langchain: Any,
+    span_exporter: InMemorySpanExporter,
+    build_graph: Any,
+    async_mode: bool,
+) -> None:
+    graph = build_graph()
+
+    with instrument_langchain():
+        inputs = {"messages": [HumanMessage(content="hello")]}
+        if async_mode:
+            await graph.ainvoke(inputs)
+        else:
+            graph.invoke(inputs)
+
+    assert [span.name for span in _workflow_spans(span_exporter)] == [
+        "invoke_workflow outer_graph"
+    ]
+
+
+def test_nested_workflow_call_config_trace_opt_out_suppresses(
+    instrument_langchain: Any,
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    inner = _graph(_respond, name="inner_graph")
+
+    def run_inner(state: _State) -> _State:
+        return inner.invoke(state, config={"metadata": {"otel_trace": False}})
+
+    with instrument_langchain():
+        _graph(run_inner, name="outer_graph").invoke(
+            {"messages": [HumanMessage(content="hello")]}
+        )
+
+    assert [span.name for span in _workflow_spans(span_exporter)] == [
+        "invoke_workflow outer_graph"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 3. Deeply nested subgraphs (3-level: outer -> middle -> inner)
 # ---------------------------------------------------------------------------

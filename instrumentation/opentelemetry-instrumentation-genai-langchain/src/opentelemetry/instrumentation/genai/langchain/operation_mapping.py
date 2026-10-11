@@ -216,6 +216,7 @@ def _should_ignore_chain(
     agent_name: str | None,
     kwargs: dict[str, Any],
     declared_agent_name: str | None = None,
+    graph_metadata: dict[str, Any] | None = None,
 ) -> bool:
     """Return True if the chain callback should be silently suppressed.
 
@@ -223,8 +224,10 @@ def _should_ignore_chain(
     * The node is the LangGraph ``__start__`` node.
     * The name carries the ``Middleware.`` prefix.
     * ``metadata["otel_trace"]`` is explicitly ``False``.
-    * ``metadata["otel_agent_span"]`` is explicitly ``False`` and no other
-      agent signals are present.
+    * ``otel_agent_span`` is explicitly ``False`` and no other agent signals
+      are present. ``graph_metadata``, when given, replaces ``metadata`` for
+      this check, because callback metadata also carries what the graph
+      inherited from its enclosing task.
     """
     if metadata:
         node = metadata.get(LANGGRAPH_NODE_KEY)
@@ -234,11 +237,14 @@ def _should_ignore_chain(
         if metadata.get(_META_OTEL_TRACE) is False:
             return True
 
+        agent_span_metadata = (
+            metadata if graph_metadata is None else graph_metadata
+        )
         if (
-            metadata.get(_META_AGENT_SPAN) is False
-            and not metadata.get(_META_AGENT_NAME)
-            and not metadata.get(_META_AGENT_TYPE)
-            and not metadata.get(_META_WORKFLOW_SPAN)
+            agent_span_metadata.get(_META_AGENT_SPAN) is False
+            and not agent_span_metadata.get(_META_AGENT_NAME)
+            and not agent_span_metadata.get(_META_AGENT_TYPE)
+            and not agent_span_metadata.get(_META_WORKFLOW_SPAN)
         ):
             return True
 
@@ -265,11 +271,16 @@ def classify_chain_run(
     ancestor_agent_names: set[str] | None = None,
     announced_workflow: bool = False,
     has_parent_agent: bool = False,
+    graph_metadata: dict[str, Any] | None = None,
 ) -> str | None:
     """Classify a ``on_chain_start`` callback into a semconv operation.
 
     Returns one of the :class:`OperationName` constants, or ``None`` when
     the chain should be suppressed (no span emitted).
+
+    ``graph_metadata`` is the metadata an announced graph carries itself. An
+    announced workflow uses it, not ``metadata``, to decide whether it opted
+    out of agent spans.
 
     Classification order:
     1. Check for explicit suppression signals.
@@ -288,7 +299,13 @@ def classify_chain_run(
     )
 
     # 1. Suppress known noise.
-    if _should_ignore_chain(metadata, agent_name, kwargs, declared_agent_name):
+    if _should_ignore_chain(
+        metadata,
+        agent_name,
+        kwargs,
+        declared_agent_name,
+        graph_metadata if announced_workflow else None,
+    ):
         return None
 
     # 2. Graph announcements identify roots despite inherited callback metadata.

@@ -259,6 +259,56 @@ class TestClassifyChainRun:
         )
         assert result == OperationName.INVOKE_WORKFLOW
 
+    @pytest.mark.parametrize(
+        ("metadata", "graph_metadata", "expected"),
+        [
+            pytest.param(
+                {"otel_agent_span": False},
+                {},
+                OperationName.INVOKE_WORKFLOW,
+                id="inherited-agent-span-opt-out-is-ignored",
+            ),
+            pytest.param(
+                {"otel_agent_span": False},
+                {"otel_agent_span": False},
+                None,
+                id="own-agent-span-opt-out-suppresses",
+            ),
+            pytest.param(
+                {"otel_trace": False},
+                {},
+                None,
+                id="inherited-trace-opt-out-suppresses",
+            ),
+        ],
+    )
+    def test_announced_workflow_agent_span_opt_out_must_be_its_own(
+        self,
+        metadata: dict[str, Any],
+        graph_metadata: dict[str, Any],
+        expected: str | None,
+    ) -> None:
+        result = classify_chain_run(
+            serialized={},
+            metadata=metadata,
+            kwargs={"name": "named_subgraph"},
+            parent_run_id=uuid.uuid4(),
+            announced_workflow=True,
+            graph_metadata=graph_metadata,
+        )
+        assert result == expected
+
+    def test_graph_metadata_does_not_affect_announced_agents(self):
+        result = classify_chain_run(
+            serialized={},
+            metadata={"otel_agent_span": False},
+            kwargs={"name": "inner_agent"},
+            parent_run_id=uuid.uuid4(),
+            announced_agent=True,
+            graph_metadata={},
+        )
+        assert result is None
+
     def test_root_chain_with_no_signals_is_workflow(self):
         # A root chain (no parent) with no special names defaults to workflow.
         result = classify_chain_run(
