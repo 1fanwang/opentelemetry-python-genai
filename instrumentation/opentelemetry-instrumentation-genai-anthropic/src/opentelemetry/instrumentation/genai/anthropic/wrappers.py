@@ -137,12 +137,17 @@ class _MessagesStreamMixin(Generic[ResponseFormatT]):
         )
 
     def _partial_output_messages(self) -> list[OutputMessage] | None:
-        if not self._self_block_states:
-            return None
+        block_states = self._self_block_states.copy()
+        if self._self_message is not None:
+            # text_stream bypasses our event tracking, but the snapshot has
+            # the received text. Tool snapshots may still hold placeholder input.
+            for index, block in enumerate(self._self_message.content):
+                if block.type == "text":
+                    block_states[index] = create_stream_block_state(block)
 
         parts = [
             part
-            for _, state in sorted(self._self_block_states.items())
+            for _, state in sorted(block_states.items())
             if (part := stream_block_state_to_part(state)) is not None
         ]
         if not parts:
@@ -164,17 +169,13 @@ class _MessagesStreamMixin(Generic[ResponseFormatT]):
         # snapshot can be the only record of the response.
         self._adopt_sdk_snapshot()
         incomplete_response = self._is_incomplete_response()
-        if self._self_message is not None:
-            usage = getattr(self._self_message, "usage", None)
-            if usage is not None and (
-                incomplete_response or self._self_output_tokens is not None
-            ):
-                usage.output_tokens = self._self_output_tokens
         _set_response_attributes(
             self._self_invocation,
             self._self_message,
             self._self_capture_content and not incomplete_response,
         )
+        if incomplete_response or self._self_output_tokens is not None:
+            self._self_invocation.output_tokens = self._self_output_tokens
         if incomplete_response:
             self._self_invocation.finish_reasons = ["error"]
             if (
@@ -262,6 +263,11 @@ class _MessagesStreamMixin(Generic[ResponseFormatT]):
         | ParsedMessageStreamEvent[ResponseFormatT],
     ) -> None:
         chunk_type = getattr(chunk, "type", None)
+        if not self._self_capture_content and chunk_type in (
+            "content_block_start",
+            "content_block_delta",
+        ):
+            return
         if chunk_type == "content_block_start":
             index = getattr(chunk, "index", None)
             content_block = getattr(chunk, "content_block", None)

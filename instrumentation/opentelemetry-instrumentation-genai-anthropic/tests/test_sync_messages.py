@@ -1520,6 +1520,86 @@ def test_sync_messages_stream_early_exit_marks_incomplete_tool_use(
     ]
 
 
+@pytest.mark.parametrize(
+    "capture_fixture", ["instrument_no_content", "instrument_with_content"]
+)
+def test_sync_messages_stream_early_exit_preserves_sdk_snapshot(
+    request, span_exporter, capture_fixture
+):
+    request.getfixturevalue(capture_fixture)
+
+    def respond(_request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_partial_tool_use_stream_sse_body(),
+        )
+
+    with Anthropic(
+        api_key="test_anthropic_api_key",
+        base_url="http://anthropic.test",
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+    ) as client:
+        with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=256,
+            messages=[{"role": "user", "content": "What is the weather?"}],
+        ) as stream:
+            next(stream)
+            snapshot = stream.current_message_snapshot
+            before_close = snapshot.model_dump()
+            assert snapshot.usage.output_tokens == 0
+
+    assert snapshot.model_dump() == before_close
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert (
+        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in spans[0].attributes
+    )
+    assert spans[0].attributes[
+        GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS
+    ] == ("error",)
+
+
+def test_sync_messages_stream_without_content_does_not_buffer_blocks(
+    span_exporter, instrument_no_content
+):
+    def respond(_request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_partial_tool_use_stream_sse_body(),
+        )
+
+    with Anthropic(
+        api_key="test_anthropic_api_key",
+        base_url="http://anthropic.test",
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+    ) as client:
+        with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=256,
+            messages=[{"role": "user", "content": "What is the weather?"}],
+            tools=[_WEATHER_TOOL],
+        ) as stream:
+            for _ in stream:
+                assert not stream._self_block_states
+            assert stream.current_message_snapshot.content[0].input == {
+                "city": "Chicago",
+                "unit": "celsius",
+            }
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert (
+        spans[0].attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 10
+    )
+    assert spans[0].attributes[
+        GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS
+    ] == ("tool_call",)
+    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in spans[0].attributes
+
+
 @pytest.mark.vcr()
 @pytest.mark.cassette("test_sync_messages_create_captures_tool_use_content")
 @pytest.mark.skipif(
@@ -2760,6 +2840,43 @@ def test_sync_messages_raw_response_parse_after_exit(
     assert spans[0].attributes[GenAIAttributes.GEN_AI_RESPONSE_MODEL] == model
 
     assert raw_response.parse().model == model
+
+
+@pytest.mark.vcr()
+@pytest.mark.cassette("test_sync_messages_stream")
+@pytest.mark.parametrize("read_events_first", [False, True])
+def test_sync_messages_text_stream_early_exit_captures_partial_text(
+    span_exporter, anthropic_client, instrument_with_content, read_events_first
+):
+    with anthropic_client.messages.stream(
+        model="claude-sonnet-4-20250514",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "Say hello in one word."}],
+    ) as stream:
+        if read_events_first:
+            for event in stream:
+                if event.type == "content_block_start":
+                    break
+        for text in stream.text_stream:
+            break
+        assert text == "Hello!"
+        assert stream.current_message_snapshot.stop_reason is None
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert (
+        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in spans[0].attributes
+    )
+    assert _load_span_messages(
+        spans[0], GenAIAttributes.GEN_AI_OUTPUT_MESSAGES
+    ) == [
+        {
+            "role": "assistant",
+            "parts": [{"type": "text", "content": "Hello!"}],
+            "finish_reason": "error",
+            "name": None,
+        }
+    ]
 
 
 @pytest.mark.vcr()

@@ -1087,6 +1087,92 @@ async def test_async_messages_stream_early_exit_marks_incomplete_tool_use(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "capture_fixture", ["instrument_no_content", "instrument_with_content"]
+)
+async def test_async_messages_stream_early_exit_preserves_sdk_snapshot(
+    request, span_exporter, capture_fixture
+):
+    request.getfixturevalue(capture_fixture)
+
+    def respond(_request):
+        return _http_lib.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_partial_tool_use_stream_sse_body(),
+        )
+
+    async with AsyncAnthropic(
+        api_key="test_anthropic_api_key",
+        base_url="http://anthropic.test",
+        http_client=_http_lib.AsyncClient(
+            transport=_http_lib.MockTransport(respond)
+        ),
+    ) as client:
+        async with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=256,
+            messages=[{"role": "user", "content": "What is the weather?"}],
+        ) as stream:
+            await anext(stream)
+            snapshot = stream.current_message_snapshot
+            before_close = snapshot.model_dump()
+            assert snapshot.usage.output_tokens == 0
+
+    assert snapshot.model_dump() == before_close
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert (
+        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in spans[0].attributes
+    )
+    assert spans[0].attributes[
+        GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS
+    ] == ("error",)
+
+
+@pytest.mark.asyncio
+async def test_async_messages_stream_without_content_does_not_buffer_blocks(
+    span_exporter, instrument_no_content
+):
+    def respond(_request):
+        return _http_lib.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_partial_tool_use_stream_sse_body(),
+        )
+
+    async with AsyncAnthropic(
+        api_key="test_anthropic_api_key",
+        base_url="http://anthropic.test",
+        http_client=_http_lib.AsyncClient(
+            transport=_http_lib.MockTransport(respond)
+        ),
+    ) as client:
+        async with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=256,
+            messages=[{"role": "user", "content": "What is the weather?"}],
+            tools=[_WEATHER_TOOL],
+        ) as stream:
+            async for _ in stream:
+                assert not stream._self_block_states
+            assert stream.current_message_snapshot.content[0].input == {
+                "city": "Chicago",
+                "unit": "celsius",
+            }
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert (
+        spans[0].attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 10
+    )
+    assert spans[0].attributes[
+        GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS
+    ] == ("tool_call",)
+    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in spans[0].attributes
+
+
+@pytest.mark.asyncio
 @pytest.mark.vcr()
 @pytest.mark.skipif(
     not _has_thinking_param,
@@ -2422,6 +2508,47 @@ async def test_async_raw_response_proxy_hooks_stack_over_one_response():
     assert first_stops == [True]
     assert second_stops == [True]
     assert http_response.close_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.vcr()
+@pytest.mark.cassette("test_async_messages_stream")
+@pytest.mark.parametrize("read_events_first", [False, True])
+async def test_async_messages_text_stream_early_exit_captures_partial_text(
+    span_exporter,
+    async_anthropic_client,
+    instrument_with_content,
+    read_events_first,
+):
+    async with async_anthropic_client.messages.stream(
+        model="claude-haiku-4-5",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "Say hello in one word."}],
+    ) as stream:
+        if read_events_first:
+            async for event in stream:
+                if event.type == "content_block_start":
+                    break
+        async for text in stream.text_stream:
+            break
+        assert text == "Hello."
+        assert stream.current_message_snapshot.stop_reason is None
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert (
+        GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS not in spans[0].attributes
+    )
+    assert _load_span_messages(
+        spans[0], GenAIAttributes.GEN_AI_OUTPUT_MESSAGES
+    ) == [
+        {
+            "role": "assistant",
+            "parts": [{"type": "text", "content": "Hello."}],
+            "finish_reason": "error",
+            "name": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio
