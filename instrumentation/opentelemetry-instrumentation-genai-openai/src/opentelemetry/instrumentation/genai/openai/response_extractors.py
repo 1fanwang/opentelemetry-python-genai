@@ -273,11 +273,6 @@ def _get_call_id(item: object) -> str | None:
 
 # Client-side tool calls, by the field holding the call's arguments. A custom
 # tool takes free-form text where a function takes a JSON arguments string.
-# OpenAI places computer calls in response output and their results in request
-# input; action/actions and call_id belong to the call item.
-# https://github.com/openai/openai-python/blob/03b3ec474241fe3a73c4818dc6b886da28faaf91/src/openai/types/responses/response_output_item.py#L277-L285
-# https://github.com/openai/openai-python/blob/03b3ec474241fe3a73c4818dc6b886da28faaf91/src/openai/types/responses/response_computer_tool_call.py#L226-L255
-# https://github.com/openai/openai-python/blob/03b3ec474241fe3a73c4818dc6b886da28faaf91/src/openai/types/responses/response_input_item_param.py#L713-L719
 _TOOL_CALL_ARGUMENT_FIELDS = {
     "function_call": "arguments",
     "custom_tool_call": "input",

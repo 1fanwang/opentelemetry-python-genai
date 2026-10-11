@@ -17,7 +17,6 @@ from openai import (
     NotFoundError,
 )
 from pydantic import BaseModel
-from vcr import VCR
 
 from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
 from opentelemetry.instrumentation.genai.openai.response_wrappers import (
@@ -46,7 +45,6 @@ from .test_responses import (
     ResponseComputerToolCall,
     _has_computer_call_output_input_type,
     _has_computer_tool_type,
-    _skip_without_computer_tool_cassette,
     _supports_computer_call_response_output,
     assert_responses_streaming_timing_metrics,
 )
@@ -1324,6 +1322,7 @@ async def test_async_responses_create_captures_custom_tool_history(
     )
 
 
+@pytest.mark.vcr()
 @pytest.mark.skipif(
     not _has_computer_call_output_input_type
     or not _has_computer_tool_type
@@ -1332,46 +1331,42 @@ async def test_async_responses_create_captures_custom_tool_history(
 )
 @pytest.mark.asyncio()
 async def test_async_responses_create_captures_computer_tool_loop(
-    request: pytest.FixtureRequest,
     span_exporter: InMemorySpanExporter,
     async_openai_client: AsyncOpenAI,
     instrument_with_content: OpenAIInstrumentor,
-    vcr: VCR,
 ) -> None:
     _skip_if_not_latest()
-    _skip_without_computer_tool_cassette(request)
 
     history = [
         {"role": "user", "content": "Take a screenshot of the current page."}
     ]
-    with vcr.use_cassette(f"{request.node.name}.yaml"):
-        first_response = await async_openai_client.responses.create(
-            model="gpt-6-luna",
-            tools=[{"type": "computer"}],
-            input=history,
-            tool_choice="required",
-        )
-        (computer_call,) = [
-            item
-            for item in first_response.output
-            if isinstance(item, ResponseComputerToolCall)
-        ]
-        await async_openai_client.responses.create(
-            model="gpt-6-luna",
-            tools=[{"type": "computer"}],
-            input=[
-                *history,
-                *first_response.output,
-                ComputerCallOutput(
-                    type="computer_call_output",
-                    call_id=computer_call.call_id,
-                    output={
-                        "type": "computer_screenshot",
-                        "image_url": COMPUTER_SCREENSHOT_DATA_URL,
-                    },
-                ),
-            ],
-        )
+    first_response = await async_openai_client.responses.create(
+        model="gpt-6-luna",
+        tools=[{"type": "computer"}],
+        input=history,
+        tool_choice="required",
+    )
+    (computer_call,) = [
+        item
+        for item in first_response.output
+        if isinstance(item, ResponseComputerToolCall)
+    ]
+    await async_openai_client.responses.create(
+        model="gpt-6-luna",
+        tools=[{"type": "computer"}],
+        input=[
+            *history,
+            *first_response.output,
+            ComputerCallOutput(
+                type="computer_call_output",
+                call_id=computer_call.call_id,
+                output={
+                    "type": "computer_screenshot",
+                    "image_url": COMPUTER_SCREENSHOT_DATA_URL,
+                },
+            ),
+        ],
+    )
 
     first_span, second_span = span_exporter.get_finished_spans()
     assert first_span.attributes[

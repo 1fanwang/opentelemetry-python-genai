@@ -6,7 +6,6 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
-from pathlib import Path
 
 import pytest
 from openai import (
@@ -17,7 +16,6 @@ from openai import (
     Stream,
 )
 from pydantic import BaseModel, TypeAdapter, ValidationError
-from vcr import VCR
 
 from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
 from opentelemetry.instrumentation.genai.openai.response_wrappers import (
@@ -206,20 +204,6 @@ def _supports_computer_call_response_output() -> bool:
     except ValidationError:
         return False
     return getattr(response_item, "actions", None) is not None
-
-
-def _skip_without_computer_tool_cassette(
-    request: pytest.FixtureRequest,
-) -> None:
-    cassette_path = (
-        Path(__file__).parent / "cassettes" / f"{request.node.name}.yaml"
-    )
-    if not cassette_path.is_file() and not request.config.getoption(
-        "--vcr-record"
-    ):
-        pytest.skip(
-            "No provider cassette; rerun with --vcr-record=once to record it"
-        )
 
 
 def _assert_response_content(span, response, log_exporter):
@@ -1450,6 +1434,7 @@ def test_responses_create_captures_custom_tool_history(
     )
 
 
+@pytest.mark.vcr()
 @pytest.mark.skipif(
     not _has_computer_call_output_input_type
     or not _has_computer_tool_type
@@ -1457,46 +1442,42 @@ def test_responses_create_captures_custom_tool_history(
     reason="openai SDK cannot parse the GA computer tool loop",
 )
 def test_responses_create_captures_computer_tool_loop(
-    request: pytest.FixtureRequest,
     span_exporter: InMemorySpanExporter,
     openai_client: OpenAI,
     instrument_with_content: OpenAIInstrumentor,
-    vcr: VCR,
 ) -> None:
     _skip_if_not_latest()
-    _skip_without_computer_tool_cassette(request)
 
     history = [
         {"role": "user", "content": "Take a screenshot of the current page."}
     ]
-    with vcr.use_cassette(f"{request.node.name}.yaml"):
-        first_response = openai_client.responses.create(
-            model="gpt-6-luna",
-            tools=[{"type": "computer"}],
-            input=history,
-            tool_choice="required",
-        )
-        (computer_call,) = [
-            item
-            for item in first_response.output
-            if isinstance(item, ResponseComputerToolCall)
-        ]
-        openai_client.responses.create(
-            model="gpt-6-luna",
-            tools=[{"type": "computer"}],
-            input=[
-                *history,
-                *first_response.output,
-                ComputerCallOutput(
-                    type="computer_call_output",
-                    call_id=computer_call.call_id,
-                    output={
-                        "type": "computer_screenshot",
-                        "image_url": COMPUTER_SCREENSHOT_DATA_URL,
-                    },
-                ),
-            ],
-        )
+    first_response = openai_client.responses.create(
+        model="gpt-6-luna",
+        tools=[{"type": "computer"}],
+        input=history,
+        tool_choice="required",
+    )
+    (computer_call,) = [
+        item
+        for item in first_response.output
+        if isinstance(item, ResponseComputerToolCall)
+    ]
+    openai_client.responses.create(
+        model="gpt-6-luna",
+        tools=[{"type": "computer"}],
+        input=[
+            *history,
+            *first_response.output,
+            ComputerCallOutput(
+                type="computer_call_output",
+                call_id=computer_call.call_id,
+                output={
+                    "type": "computer_screenshot",
+                    "image_url": COMPUTER_SCREENSHOT_DATA_URL,
+                },
+            ),
+        ],
+    )
 
     first_span, second_span = span_exporter.get_finished_spans()
     assert first_span.attributes[
